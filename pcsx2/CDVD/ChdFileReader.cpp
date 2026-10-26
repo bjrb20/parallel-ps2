@@ -88,6 +88,7 @@ bool ChdFileReader::DriveRead(rchd_t* chd, const Source& self, const Source& par
 					return false;
 				const uint64_t avail = static_cast<uint64_t>(src.len) - reqs[i].offset;
 				const size_t   len   = static_cast<size_t>(pcsx2_min_i(reqs[i].length, avail));
+				src.ra.Note(src.fp, reqs[i].offset, len);
 				if (rchd_feed_at(chd, reqs[i].offset, reqs[i].source, src.base + reqs[i].offset, len) < 0)
 					return false;
 			}

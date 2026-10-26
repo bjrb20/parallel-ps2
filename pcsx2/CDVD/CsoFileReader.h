@@ -64,6 +64,7 @@ private:
 	// The actual source cso file handle.
 	const u8* m_map_base = nullptr;
 	int64_t m_map_len = 0;
+	MappedReadahead m_map_ra;
 	RFILE* m_src;
 	void* m_inflate; /* rinflate raw stream, reset per frame */
 };

@@ -78,7 +78,7 @@ bool FlatFileReader::Open2(const char* filename)
 		int64_t maplen = 0;
 		const uint8_t* base = filestream_get_mapped_ptr(m_file, &maplen);
 		if (base && maplen >= filesize)
-			SetDirectSpan(base, m_file_size);
+			SetDirectSpan(base, m_file_size, m_file);
 	}
 	return true;
 }

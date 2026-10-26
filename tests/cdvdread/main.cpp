@@ -236,6 +236,32 @@ static int check_backwards_cso(const char *path)
    return ok;
 }
 
+/* The mapped readers hint ahead of a reader that goes on in order (the
+ * view itself reads nothing ahead on Windows); jumps hint nothing. */
+static int check_readahead(void)
+{
+   const u64 A = MappedReadahead::AHEAD;
+   MappedReadahead ra;
+   int ok = 1;
+   u64 pos;
+   int hints = 0;
+
+   ok &= ra.Step(0, 2048);                  /* first read in order */
+   ok &= !ra.Step(2048, 2048);              /* inside the hinted span */
+   for (pos = 4096; pos < A; pos += 2048)
+      hints += ra.Step(pos, 2048);
+   ok &= hints == 1;                        /* once more, half way */
+   ok &= !ra.Step(100 * A, 2048);           /* a jump */
+   ok &= ra.Step(100 * A + 2048, 2048);     /* in order from there */
+   pos = 100 * A + 4096 + MappedReadahead::GAP / 2;
+   ok &= !ra.Step(pos, 2048);               /* a small skip is no jump, */
+   ok &= !ra.Step(pos + 2048, 2048);        /* so nothing hints again yet */
+   ok &= !ra.Step(0, 2048);                 /* back to the start */
+   printf(ok ? "  ok: read-ahead hints follow a reader in order\n"
+             : "  FAIL: read-ahead hints\n");
+   return ok;
+}
+
 int main(int argc, char **argv)
 {
    const char *iso = "cdvdread.iso";
@@ -417,6 +443,7 @@ int main(int argc, char **argv)
    }
 
    ok &= check_backwards_cso("cdvdread_backwards.cso");
+   ok &= check_readahead();
 
    free(image);
    remove(iso);

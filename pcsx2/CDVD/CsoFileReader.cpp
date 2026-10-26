@@ -247,6 +247,7 @@ void CsoFileReader::Close2()
 		m_src = NULL;
 		m_map_base = nullptr;
 		m_map_len = 0;
+		m_map_ra = MappedReadahead();
 	}
 	if (m_inflate)
 	{
@@ -314,6 +315,8 @@ int CsoFileReader::ReadChunk(void *dst, s64 chunkID)
 	if (m_map_base && frameRawPos < (u64)m_map_len)
 	{
 		const u64 avail = (u64)m_map_len - frameRawPos;
+		m_map_ra.Note(m_src, frameRawPos, compressed
+				? (frameRawSize < avail ? frameRawSize : avail) : m_frameSize);
 		if (!compressed)
 		{
 			if (avail < m_frameSize)

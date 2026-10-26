@@ -42,6 +42,7 @@ private:
 		RFILE*         fp   = nullptr;
 		const uint8_t* base = nullptr; /* non-NULL when mapped */
 		int64_t        len  = 0;
+		mutable MappedReadahead ra;
 	};
 
 	bool OpenOne(const char* path, rchd_t** out_chd, Source* out_src);

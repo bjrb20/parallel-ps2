@@ -521,6 +521,20 @@ typedef const uint8_t *(*filestream_mapped_ptr_cb_t)(void *hfile, int64_t *len);
 void filestream_set_mapped_ptr_cb(filestream_mapped_ptr_cb_t cb);
 
 /**
+ * Ask the OS to start reading [offset, offset + len) of \c stream into
+ * memory ahead of a read or a touch of its mapping. A hint: it returns
+ * at once and does nothing on a frontend-supplied VFS or where the
+ * platform has no such request. See retro_vfs_file_prefetch_impl().
+ */
+void filestream_prefetch(RFILE *stream, uint64_t offset, uint64_t len);
+
+/* An installed VFS that keeps local handles (vfs_hybrid) takes the hint
+ * for them through this; without one the hint stops at filestream. */
+typedef void (*filestream_prefetch_cb_t)(void *hfile, uint64_t offset,
+      uint64_t len);
+void filestream_set_prefetch_cb(filestream_prefetch_cb_t cb);
+
+/**
  * Size of the window filestream_vscanf() reads and scans at a time,
  * i.e. the furthest a single conversion can reach.
  *

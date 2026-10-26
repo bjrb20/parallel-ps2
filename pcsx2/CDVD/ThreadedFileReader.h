@@ -22,6 +22,41 @@
 
 #include <string>
 
+typedef struct RFILE RFILE;
+
+/* A mapped image is read straight from the view, and Windows starts no
+ * read-ahead on a view: a reader that goes on in order hints the next
+ * few MiB of the file instead of stalling on each new page. */
+struct MappedReadahead
+{
+	/* A read within GAP of where the last ended goes on in order; it
+	 * hints AHEAD past itself, again once half of that is used. */
+	static constexpr u64 AHEAD = 4 * 1024 * 1024;
+	static constexpr u64 GAP   = 256 * 1024;
+
+	u64 next = 0;
+	u64 last = 0;
+
+	/* true: hint [pos, pos + len + AHEAD) */
+	bool Step(u64 pos, u64 len)
+	{
+		const u64  end = pos + len;
+		const bool seq = pos >= last && pos - last <= GAP;
+		last = end;
+		if (!seq)
+			next = 0;
+		if (!seq || end <= next)
+			return false;
+		next = end + AHEAD / 2;
+		return true;
+	}
+#ifdef _WIN32
+	void Note(RFILE* fp, u64 pos, u64 len);
+#else
+	void Note(RFILE*, u64, u64) {}
+#endif
+};
+
 /// A file reader for use with compressed formats
 /// Chunked/compressed file reader over a two-buffer chunk cache.
 /// Fully synchronous: reads decompress on the calling thread, where the
@@ -80,17 +115,21 @@ protected:
 	/// mutex, and the staging buffers entirely: a read is one memcpy
 	/// from the page cache on the calling thread.  The worker thread is
 	/// then never even started - readahead is the kernel's job for
-	/// mapped files, and a thread that exists to hide synchronous I/O
+	/// mapped files (asked for on Windows, see MappedReadahead), and a thread that exists to hide synchronous I/O
 	/// latency has nothing to hide when there is no I/O.
-	void SetDirectSpan(const void* base, u64 size)
+	void SetDirectSpan(const void* base, u64 size, RFILE* fp)
 	{
 		m_direct     = static_cast<const u8*>(base);
 		m_directSize = size;
+		m_directFile = fp;
+		m_directRa   = MappedReadahead();
 	}
 
 private:
 	const u8* m_direct = nullptr;
 	u64 m_directSize   = 0;
+	RFILE* m_directFile = nullptr;
+	MappedReadahead m_directRa;
 	int m_directAmt    = 0;
 	/// Direct-span read: clamped memcpy, returns bytes copied
 	int DirectRead(void* dst, u64 offset, u32 size);

@@ -19,6 +19,8 @@
 #include "ThreadedFileReader.h"
 #include "ThreadedFileReader.h"
 
+#include <streams/file_stream.h>
+
 #include <cstring>
 #include <algorithm>
 
@@ -28,12 +30,21 @@ static constexpr u32 MINIMUM_SIZE = 128 * 1024;
 
 ThreadedFileReader::ThreadedFileReader() = default;
 
+#ifdef _WIN32
+void MappedReadahead::Note(RFILE* fp, u64 pos, u64 len)
+{
+	if (fp && Step(pos, len))
+		filestream_prefetch(fp, pos, len + AHEAD);
+}
+#endif
+
 int ThreadedFileReader::DirectRead(void* dst, u64 offset, u32 size)
 {
 	if (offset >= m_directSize)
 		return 0;
 	const u64 avail = m_directSize - offset;
 	const u32 len   = static_cast<u32>(pcsx2_min_u64(size, avail));
+	m_directRa.Note(m_directFile, offset, len);
 	memcpy(dst, m_direct + offset, len);
 	return static_cast<int>(len);
 }
