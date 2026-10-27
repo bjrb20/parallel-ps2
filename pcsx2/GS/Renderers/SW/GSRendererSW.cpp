@@ -243,6 +243,32 @@ GSTexture* GSRendererSW::GetOutput(int i, float& scale, int& y_offset)
 			w_wrap = true;
 		}
 
+		/* Native and in one part: read straight into the memory the
+		 * texture's upload is mapped to. The read is by whole blocks, so
+		 * the block row the display ends inside is read here first and
+		 * the rows it shows copied over. */
+		if (s == 1 && !h_wrap && !w_wrap)
+		{
+			GSTexture::GSMap m;
+			if (m_texture[index]->Map(m, &out_r))
+			{
+				const GSOffset off = m_mem.GetOffset(curFramebuffer.Block(), curFramebuffer.FBW, curFramebuffer.PSM);
+				const int whole = (h / psm.bs.y) * psm.bs.y;
+				int y;
+				if (whole > 0)
+					psm.rtx(m_mem, off, GSVector4i(r.left, r.top, r.right, r.top + whole), m.bits, m.pitch, texa);
+				if (whole < h)
+				{
+					psm.rtx(m_mem, off, GSVector4i(r.left, r.top + whole, r.right, r.top + whole + psm.bs.y), m_output, pitch, texa);
+					for (y = whole; y < h; y++)
+						memcpy(m.bits + static_cast<size_t>(y) * m.pitch, m_output + static_cast<size_t>(y - whole) * pitch,
+							static_cast<size_t>(w) * 4);
+				}
+				m_texture[index]->Unmap();
+				return m_texture[index];
+			}
+		}
+
 		// Top left rect
 		psm.rtx(m_mem, m_mem.GetOffset(curFramebuffer.Block(), curFramebuffer.FBW, curFramebuffer.PSM), r.ralign<Align_Outside>(psm.bs), m_output, pitch, texa);
 
@@ -270,20 +296,31 @@ GSTexture* GSRendererSW::GetOutput(int i, float& scale, int& y_offset)
 		if (s > 1)
 		{
 			/* A format the 2x memory does not hold: native, each pixel on
-			 * its 2x2. */
+			 * its 2x2, straight into the texture's upload if it maps. */
 			const int W = w * 2, H = h * 2;
+			const GSVector4i out2(0, 0, W, H);
+			GSTexture::GSMap m;
+			const bool mapped = m_texture[index]->Map(m, &out2);
 			int x, y;
 
-			if (!HiresOutput(static_cast<size_t>(W) * H))
-				return m_texture[index];
+			if (!mapped)
+			{
+				if (!HiresOutput(static_cast<size_t>(W) * H))
+					return m_texture[index];
+				m.bits  = reinterpret_cast<u8*>(m_hr_output);
+				m.pitch = W * 4;
+			}
 			for (y = 0; y < H; y++)
 			{
 				const u32* src = reinterpret_cast<const u32*>(m_output + (y >> 1) * pitch);
-				u32* dst = m_hr_output + static_cast<size_t>(y) * W;
+				u32* dst = reinterpret_cast<u32*>(m.bits + static_cast<size_t>(y) * m.pitch);
 				for (x = 0; x < W; x++)
 					dst[x] = src[x >> 1];
 			}
-			m_texture[index]->Update(GSVector4i(0, 0, W, H), m_hr_output, W * 4);
+			if (mapped)
+				m_texture[index]->Unmap();
+			else
+				m_texture[index]->Update(out2, m_hr_output, W * 4);
 		}
 		else
 			m_texture[index]->Update(out_r, m_output, pitch);
@@ -327,13 +364,24 @@ GSTexture* GSRendererSW::GetOutputHires(int index, const GSPCRTCRegs::PCRTCDispl
 			break;
 	}
 
-	if (!HiresOutput(static_cast<size_t>(W) * H))
-		return m_texture[index];
-
 	HiresRestored();
 	HiresRefresh(m_mem.GetOffset(fb.Block(), fb.FBW, fb.PSM), fb.PSM, GSVector4i(off_x, off_y, off_x + w, off_y + h));
 
 	m_hr_colbuf.resize(W);
+	/* straight into the texture's upload if it maps */
+	{
+		const GSVector4i out2(0, 0, W, H);
+		GSTexture::GSMap m;
+		if (m_texture[index]->Map(m, &out2))
+		{
+			gs_hr_read(l, m_hr_vm, fb.FBP, fb.FBW, off_x, off_y, W, H, kind, texa.TA0, texa.TA1,
+				reinterpret_cast<unsigned*>(m.bits), m.pitch, m_hr_colbuf.data());
+			m_texture[index]->Unmap();
+			return m_texture[index];
+		}
+	}
+	if (!HiresOutput(static_cast<size_t>(W) * H))
+		return m_texture[index];
 	gs_hr_read(l, m_hr_vm, fb.FBP, fb.FBW, off_x, off_y, W, H, kind, texa.TA0, texa.TA1, m_hr_output, W * 4, m_hr_colbuf.data());
 
 	m_texture[index]->Update(GSVector4i(0, 0, W, H), m_hr_output, W * 4);

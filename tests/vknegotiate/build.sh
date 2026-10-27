@@ -170,15 +170,39 @@ if ! VN_EXPECT_RUN=3c2b1a09 VN_IDLE_BIOS=1 LRPS2_BIOS="$SCRATCH/vram_wrap_read.b
 	exit 1
 fi
 
+# The software renderer on the Vulkan device, which reads its output
+# straight into the texture's upload: a display that ends inside a row of
+# blocks (frame_low_odd) shows the first 445 lines of the one that does
+# not (frame_low), natively and at 2x.
+for c in frame_low frame_low_odd; do
+	"$SCRATCH/swdraw" --bios "$SCRATCH/$c.bin" $c
+done
+for scale in 1 2; do
+	rows=$((445 * scale))
+	whole=$(VN_SCALE=$scale VN_HASH_ROWS=$rows VN_HASH_IMAGE=1 VN_IDLE_BIOS=1 LRPS2_BIOS="$SCRATCH/frame_low.bin" \
+		VN_RENDERER="Software (HW)" timeout 300 "$DIR/vknegotiate" "$CORE" "$SCRATCH" v2 |
+		sed -n 's/.*image: .*, hash \([0-9a-f]*\).*/\1/p') || true
+	odd=$(VN_SCALE=$scale VN_HASH_IMAGE=1 VN_IDLE_BIOS=1 LRPS2_BIOS="$SCRATCH/frame_low_odd.bin" \
+		VN_RENDERER="Software (HW)" timeout 300 "$DIR/vknegotiate" "$CORE" "$SCRATCH" v2 |
+		sed -n 's/.*image: .*, hash \([0-9a-f]*\).*/\1/p') || true
+	if [ -z "$whole" ] || [ "$whole" != "$odd" ]; then
+		rm -rf "$SCRATCH"
+		echo "  FAIL: software renderer output, ${scale}x: ${odd:-none}, not ${whole:-none}"
+		exit 1
+	fi
+	echo "  software renderer output, ${scale}x: a display ending inside a block row shows what the other does"
+done
+
 # Cases whose failure is an out-of-bounds read or an overflow: they only
 # fail on their own against a core built with
 # SANITIZER=address,undefined,float-cast-overflow (GCC's undefined leaves
 # out float to integer conversions), and a sanitizer report ends the run.
 # present scans out frames while the frontend's sync slots grow from one
 # to three, the frontend reading the image it was last given meanwhile.
+# The software renderer runs them too, its output on the Vulkan device.
 for c in upload_short big_triangles present nine_frames fb_wrap uv_huge frame_on_depth dirty_whole_target depth_texture_far move_width_change frame_on_depth32 shuffle_left_of_offset split_clear_no_display; do
 	"$SCRATCH/swdraw" --bios "$SCRATCH/$c.bin" $c
-	for renderer in Vulkan paraLLEl-GS; do
+	for renderer in Vulkan paraLLEl-GS "Software (HW)"; do
 		if ! UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
 				VN_SYNC_GROW=1 VN_IDLE_BIOS=1 LRPS2_BIOS="$SCRATCH/$c.bin" VN_RENDERER=$renderer \
 				timeout 300 "$DIR/vknegotiate" "$CORE" "$SCRATCH" v2; then

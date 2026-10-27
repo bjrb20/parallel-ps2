@@ -21,7 +21,8 @@
  * (secondload's) unless LRPS2_BIOS names a real one; with a real one the
  * frames must also arrive as images, unless VN_IDLE_BIOS says the image
  * draws nothing after it boots (tests/swdraw's cases). VN_RENDERER picks
- * the renderer (Vulkan, the default, or paraLLEl-GS); VN_EXPECT_RUN names
+ * the renderer (Vulkan, the default, paraLLEl-GS, or Software (HW) on the
+ * Vulkan device) and VN_SCALE its upscale multiplier; VN_EXPECT_RUN names
  * 32-bit words the state at the end must hold 64 of each in a row, and
  * VN_CORRUPT_SHADER_INDEX damages the shader cache a previous run left.
  * VN_DUMP_STATE names a file the state after the frames is written to,
@@ -29,8 +30,8 @@
  * VN_LOAD_PAUSE_MS leaves that long between the context reset and the
  * first frame, as a frontend's own loading does.
  * VN_HASH_IMAGE reads back the last image the core handed over and has
- * its hash reported, for the pictures of two builds or two runs to be
- * compared.
+ * its hash reported (of its first VN_HASH_ROWS rows, if set), for the
+ * pictures of two builds or two cases to be compared.
  * VN_COUNT_PIPELINES counts the pipelines the core builds by the thread
  * that builds them - its compile threads are named PGS-Compile - and the
  * longest frame after the first (Linux: thread names).
@@ -324,6 +325,9 @@ static int vn_hash_image(VkInstance inst, VkPhysicalDevice gpu, VkDevice dev, Vk
 		(PFN_vkGetPhysicalDeviceMemoryProperties)gipa(inst, "vkGetPhysicalDeviceMemoryProperties");
 	const struct retro_vulkan_image* img = s_last_image;
 	const VkDeviceSize size = (VkDeviceSize)s_last_w * s_last_h * 4;
+	/* VN_HASH_ROWS: only the first rows */
+	const unsigned rows = (getenv("VN_HASH_ROWS") && (unsigned)atoi(getenv("VN_HASH_ROWS")) < s_last_h) ?
+		(unsigned)atoi(getenv("VN_HASH_ROWS")) : s_last_h;
 	VkPhysicalDeviceMemoryProperties mp;
 	VkBufferCreateInfo bci;
 	VkMemoryRequirements req;
@@ -422,7 +426,7 @@ static int vn_hash_image(VkInstance inst, VkPhysicalDevice gpu, VkDevice dev, Vk
 	if (pvkEndCommandBuffer(cb) != VK_SUCCESS || pvkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS
 		|| pvkQueueWaitIdle(queue) != VK_SUCCESS || pvkMapMemory(dev, mem, 0, size, 0, (void**)&p) != VK_SUCCESS)
 		goto out;
-	for (i = 0; i < size; i++)
+	for (i = 0; i < (VkDeviceSize)s_last_w * rows * 4; i++)
 		h = (h ^ p[i]) * 1099511628211ULL;
 	pvkUnmapMemory(dev, mem);
 	*hash = h;
@@ -480,7 +484,12 @@ static bool vn_environment(unsigned cmd, void* data)
 			if      (!strcmp(var->key, "pcsx2_bios"))     var->value = s_bios_name;
 			else if (!strcmp(var->key, "pcsx2_renderer")) var->value = getenv("VN_RENDERER") ? getenv("VN_RENDERER") : "Vulkan";
 			else if (!strcmp(var->key, "pcsx2_fastboot")) var->value = "disabled";
+			else if (!strcmp(var->key, "pcsx2_upscale_multiplier")) var->value = getenv("VN_SCALE");
 			return var->value != NULL;
+		case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER:
+			/* (what the software renderer on the hardware device asks) */
+			*(enum retro_hw_context_type*)data = RETRO_HW_CONTEXT_VULKAN;
+			return true;
 		case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
 			*(bool*)data = false;
 			return true;

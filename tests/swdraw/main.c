@@ -395,6 +395,27 @@ static void frame_draw(int after_t4)
 static void case_frame_ct32(void) { frame_draw(0); }
 static void case_frame_after_t4(void) { frame_draw(1); }
 
+/* A shaded triangle down to the last line of the display, and the same
+ * on a display 445 lines high, which ends inside a row of blocks: the
+ * lines it shows are the first 445 of the other's. */
+static void frame_low_draw(void)
+{
+	ad_common();
+	ad(GS_PRIM, 0, 3 | 0x08);
+	ad(GS_RGBAQ, 0x3f800000ul, 0x800000ffu);
+	ad(GS_XYZ2, 0, XY(20, 380));
+	ad(GS_RGBAQ, 0x3f800000ul, 0x8000ff00u);
+	ad(GS_XYZ2, 0, XY(620, 400));
+	ad(GS_RGBAQ, 0x3f800000ul, 0x80ff0000u);
+	ad(GS_XYZ2, 0, XY(300, 448));
+}
+static void case_frame_low(void) { frame_low_draw(); }
+static void case_frame_low_odd(void)
+{
+	s_disp_dh = 444;
+	frame_low_draw();
+}
+
 /* One A+D packet of four register writes sent in two kicks: the GIFtag
  * and two writes at once, the other two 125 vsyncs later, so a state
  * taken in between has the path in the middle of the packet. */
@@ -982,6 +1003,9 @@ static const struct { const char* name; void (*build)(void); const char* scale; 
 	{ "split_clear_no_display", case_split_clear_no_display, "1" },
 	{ "frame_on_depth32", case_frame_on_depth32, "1" },
 	{ "display_large_2x", case_display_large, "2" },
+	{ "frame_low",       case_frame_low,     "1" },
+	{ "frame_low_odd",   case_frame_low_odd, "1" },
+	{ "frame_low_odd_2x", case_frame_low_odd, "2" },
 };
 
 /* A 4MB image the core's BIOS scan accepts. The reset program turns on a
