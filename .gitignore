@@ -199,6 +199,7 @@ tests/ata/*.img
 /tests/mtvuring/mtvu_ring_tsan
 /tests/smaprx/smaprx_test
 /tests/smaprx/smaprx_test_tsan
+/tests/smaprx/smaprx_test_plain
 /tests/smaprx/*.exe
 /tests/framepace/framepace
 /tests/gsgroup/gsgroup
@@ -230,6 +231,8 @@ tests/ata/*.img
 /tests/cam/cam_test_tsan
 /tests/usbstate/usbstate
 /tests/nearplace/nearplace_test*
+/tests/nvram/nvram_test
+/tests/nvram/nvram_test.exe
 /tests/nvram/nvram_test
 /tests/nvram/nvram_test.exe
 /tests/d3d12heap/d3d12heap_test

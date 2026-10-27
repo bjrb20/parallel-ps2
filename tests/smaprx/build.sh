@@ -1,7 +1,10 @@
 #!/bin/sh
 # The SMAP's receive path on the real net.cpp and smap.cpp: frames from
 # the host on the RX thread, delivered and read out on the EE. Plain and
-# TSan; MSYS2 MINGW64 builds and runs the plain one.
+# TSan; MSYS2 MINGW64 builds and runs the plain one. The receive ring is
+# mirrored where the host allows it; on Linux a third lane builds
+# retro_spsc without mirroring, so records that straddle the end of the
+# ring take the copy path.
 # Runnable from ANY directory - paths resolve relative to this script.
 set -e
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -36,11 +39,13 @@ fi
 INC="-I $ROOT -I $P -I $ROOT/common -I $ROOT/common/include -I $ROOT/3rdparty/include -I $LC/include"
 DEFS="-DHAVE_THREADS -D_GNU_SOURCE -D__LIBRETRO__"
 
-build() { # output, extra flags
+build() { # output, extra flags, extra flags for retro_spsc.c
 	OBJ="$DIR/.obj_$1"
 	rm -rf "$OBJ" && mkdir -p "$OBJ"
 	for src in $C_SRC; do
-		"$CC" -std=gnu99 -w $DEFS $2 $INC -c "$src" -o "$OBJ/$(basename "$src" .c).o"
+		extra=""
+		[ "$(basename "$src")" = retro_spsc.c ] && extra="$3"
+		"$CC" -std=gnu99 -w $DEFS $2 $extra $INC -c "$src" -o "$OBJ/$(basename "$src" .c).o"
 	done
 	"$CXX" -std=c++17 -w $DEFS $2 $INC -o "$DIR/$1$EXE" $CXX_SRC "$OBJ"/*.o $LIBS
 	rm -rf "$OBJ"
@@ -48,6 +53,11 @@ build() { # output, extra flags
 
 build smaprx_test "-O2 -g $SANFLAGS"
 "$DIR/smaprx_test$EXE"
+
+if [ "$(uname -s 2>/dev/null)" = "Linux" ]; then
+	build smaprx_test_plain "-O2 -g $SANFLAGS" "-U__linux__"
+	"$DIR/smaprx_test_plain$EXE"
+fi
 
 if [ "$WINDOWS" != "1" ]; then
 	build smaprx_test_tsan "-O1 -g -fsanitize=thread"

@@ -54,7 +54,10 @@ static void NetRxThreadEntry(void* arg)
  * net_rx_deliver() hands them to the SMAP on the EE thread, so the
  * emulated device is only ever touched by the thread that emulates it.
  * A record is a NetPacket's size field followed by its bytes, rounded up
- * to a word, written in one piece. */
+ * to a word. The adapter receives straight into the ring and the SMAP
+ * reads the record where it lies; only a record that would straddle the
+ * end of a ring that is not mirrored goes through a copy. Records are
+ * whole words, so the size field itself never straddles. */
 #define NET_RX_RING_BYTES (64 * 1024)
 #define NET_RX_RECORD_BYTES(size) (offsetof(NetPacket, buffer) + (((size_t)(size) + 3) & ~(size_t)3))
 static retro_spsc_t s_rx_ring;
@@ -68,16 +71,30 @@ static retro_atomic_int_t RxRunning;
 void NetRxThread()
 {
 	NetPacket tmp;
+	const size_t largest = NET_RX_RECORD_BYTES(sizeof(tmp.buffer));
 	while (retro_atomic_load_acquire_int(&RxRunning))
 	{
 		/* Receive only with room for the largest record, so a packet
 		 * taken from the host always fits; the rest wait in the host's
 		 * own buffers while the EE catches up. */
-		while (retro_spsc_write_avail(&s_rx_ring) >= NET_RX_RECORD_BYTES(sizeof(tmp.buffer)) && nif->recv(&tmp))
+		for (;;)
 		{
-			if (tmp.size <= 0 || tmp.size > (int)sizeof(tmp.buffer))
+			void* span;
+			NetPacket* pkt;
+			if (retro_spsc_write_begin(&s_rx_ring, &span) >= largest)
+				pkt = (NetPacket*)span;
+			else if (retro_spsc_write_avail(&s_rx_ring) >= largest)
+				pkt = &tmp; /* room, but split by the end of the ring */
+			else
+				break;
+			if (!nif->recv(pkt))
+				break;
+			if (pkt->size <= 0 || pkt->size > (int)sizeof(pkt->buffer))
 				continue;
-			retro_spsc_write(&s_rx_ring, &tmp, NET_RX_RECORD_BYTES(tmp.size));
+			if (pkt == &tmp)
+				retro_spsc_write(&s_rx_ring, &tmp, NET_RX_RECORD_BYTES(tmp.size));
+			else
+				retro_spsc_write_end(&s_rx_ring, NET_RX_RECORD_BYTES(pkt->size));
 		}
 
 		retro_sleep(1);
@@ -94,9 +111,23 @@ bool net_rx_deliver()
 
 	while (rx_fifo_can_rx())
 	{
-		int size;
-		if (retro_spsc_peek(&s_rx_ring, &size, sizeof(size)) == sizeof(size))
-			retro_spsc_read(&s_rx_ring, &tmp, NET_RX_RECORD_BYTES(size));
+		const void* span;
+		const size_t contiguous = retro_spsc_read_begin(&s_rx_ring, &span);
+		if (contiguous)
+		{
+			int size;
+			size_t bytes;
+			memcpy(&size, span, sizeof(size));
+			bytes = NET_RX_RECORD_BYTES(size);
+			if (contiguous >= bytes)
+			{
+				/* rx_process only reads the packet. */
+				delivered |= rx_process((NetPacket*)const_cast<void*>(span));
+				retro_spsc_read_end(&s_rx_ring, bytes);
+				continue;
+			}
+			retro_spsc_read(&s_rx_ring, &tmp, bytes);
+		}
 		else if (!nif->InternalServerRecv(&tmp))
 			break;
 		delivered |= rx_process(&tmp);
@@ -165,7 +196,7 @@ void InitNet()
 	}
 
 	if (!s_rx_ring_ok)
-		s_rx_ring_ok = retro_spsc_init(&s_rx_ring, NET_RX_RING_BYTES);
+		s_rx_ring_ok = retro_spsc_init_mirrored(&s_rx_ring, NET_RX_RING_BYTES);
 	if (!s_rx_ring_ok)
 	{
 		log_cb(RETRO_LOG_ERROR, "DEV9: Failed to allocate the receive ring\n");
