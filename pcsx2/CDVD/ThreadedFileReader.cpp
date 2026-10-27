@@ -33,8 +33,10 @@ ThreadedFileReader::ThreadedFileReader() = default;
 #ifdef _WIN32
 void MappedReadahead::Note(RFILE* fp, u64 pos, u64 len)
 {
+	/* Past the read: the read faults its own bytes in. The hint returns
+	 * at once; the file's read-ahead thread does the rest. */
 	if (fp && Step(pos, len))
-		filestream_prefetch(fp, pos, len + AHEAD);
+		filestream_prefetch(fp, pos + len, AHEAD);
 }
 #endif
 

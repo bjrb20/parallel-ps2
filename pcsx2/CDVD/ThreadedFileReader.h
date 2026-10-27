@@ -37,7 +37,7 @@ struct MappedReadahead
 	u64 next = 0;
 	u64 last = 0;
 
-	/* true: hint [pos, pos + len + AHEAD) */
+	/* true: hint [pos + len, pos + len + AHEAD) */
 	bool Step(u64 pos, u64 len)
 	{
 		const u64  end = pos + len;
