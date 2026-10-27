@@ -817,6 +817,8 @@ public:
 	{
 		Sync,
 		FailOnCompileRequired,
+		/* Built ahead, off the recording thread: returned to the caller
+		 * and held by nothing, for Device::hand_over_pipeline. */
 		AsyncThread
 	};
 	static Pipeline build_graphics_pipeline(Device *device, const DeferredPipelineCompile &compile, CompileMode mode);

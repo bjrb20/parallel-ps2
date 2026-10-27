@@ -23,6 +23,7 @@
 #define NOMINMAX
 #include "thread_prims.hpp"
 #include "device.hpp"
+#include <retro_spsc.h>
 #ifdef GRANITE_VULKAN_FOSSILIZE
 #include "device_fossilize.hpp"
 #endif
@@ -969,6 +970,86 @@ bool Device::resolve_graphics_pipeline_record(const GraphicsPipelineRecord &reco
 	compile.cache             = legacy_pipeline_cache;
 	CommandBuffer::update_hash_graphics_pipeline(compile, nullptr);
 	return compile.hash == record.pipeline_hash;
+}
+
+/* What goes through a handoff queue, whole: written in one release,
+ * read once all of it is there. */
+struct BuiltPipeline
+{
+	Program *program;
+	Util::Hash hash;
+	Pipeline pipeline;
+};
+
+bool Device::open_pipeline_handoff(unsigned num_builders, const size_t *jobs)
+{
+	unsigned i;
+
+	close_pipeline_handoff();
+	if (!num_builders)
+		return true;
+	handoff = static_cast<retro_spsc_t *>(calloc(num_builders, sizeof(retro_spsc_t)));
+	if (!handoff)
+		return false;
+	for (i = 0; i < num_builders; i++)
+	{
+		if (!retro_spsc_init(&handoff[i], (jobs[i] ? jobs[i] : 1) * sizeof(BuiltPipeline)))
+		{
+			while (i--)
+				retro_spsc_free(&handoff[i]);
+			free(handoff);
+			handoff = nullptr;
+			return false;
+		}
+	}
+	num_handoff = num_builders;
+	return true;
+}
+
+void Device::hand_over_pipeline(unsigned builder, Program *program, Util::Hash hash, const Pipeline &pipeline)
+{
+	BuiltPipeline built;
+
+	/* (sized for every job the builder has: only a builder handing over
+	 * more than it was dealt finds it full, and then the miss builds) */
+	if (builder >= num_handoff || retro_spsc_write_avail(&handoff[builder]) < sizeof(built))
+	{
+		table->vkDestroyPipeline(device, pipeline.pipeline, nullptr);
+		return;
+	}
+	built.program  = program;
+	built.hash     = hash;
+	built.pipeline = pipeline;
+	retro_spsc_write(&handoff[builder], &built, sizeof(built));
+}
+
+void Device::collect_built_pipelines()
+{
+	unsigned i;
+
+	for (i = 0; i < num_handoff; i++)
+	{
+		BuiltPipeline built;
+		while (retro_spsc_read_avail(&handoff[i]) >= sizeof(built))
+		{
+			retro_spsc_read(&handoff[i], &built, sizeof(built));
+			built.program->stage_pipeline(built.hash, built.pipeline);
+		}
+	}
+}
+
+void Device::close_pipeline_handoff()
+{
+	unsigned i;
+
+	if (!handoff)
+		return;
+	collect_built_pipelines();
+	for (i = 0; i < num_handoff; i++)
+		retro_spsc_free(&handoff[i]);
+	free(handoff);
+	handoff     = nullptr;
+	num_handoff = 0;
 }
 
 size_t Device::get_pipeline_cache_size()
@@ -2331,6 +2412,8 @@ bool Device::swapchain_touched() const
 
 Device::~Device()
 {
+	/* (whoever opened it has joined its builders by now) */
+	close_pipeline_handoff();
 	wsi.acquire.reset();
 	wsi.release.reset();
 	wsi.swapchain.clear();

@@ -558,6 +558,9 @@ private:
 	void drain_compilation_tasks_nonblock();
 	void kick_compilation_tasks(const GSOptions &options);
 	PGS::atomic_bool compilation_tasks_active;
+	/* The device's pipeline handoff is open until every builder is
+	 * joined. */
+	bool handoff_open = false;
 
 	/* std::async's future was asked for three things here: run the batch
 	 * on another thread, ask whether it has finished without blocking

@@ -69,6 +69,8 @@ namespace Granite
 struct TaskGroup;
 }
 
+struct retro_spsc; /* libretro-common's retro_spsc.h */
+
 namespace Vulkan
 {
 enum class SwapchainRenderPass
@@ -297,6 +299,22 @@ public:
 		RenderPassSignature pass;
 	};
 	enum { GRAPHICS_PIPELINE_RECORDS = 1024 };
+
+	/* Pipelines built ahead go from each thread that builds them to the
+	 * one thread recording commands through a queue of that thread's
+	 * own, sized for the jobs it was dealt: nothing locks, nothing is
+	 * dropped. The recording thread opens the queues before the
+	 * builders start, collects what they have handed over on a miss,
+	 * and closes them once every builder has been joined. */
+	bool open_pipeline_handoff(unsigned num_builders, const size_t *jobs);
+	/* Builder @builder only. */
+	void hand_over_pipeline(unsigned builder, Program *program, Util::Hash hash, const Pipeline &pipeline);
+	/* The recording thread: what has been handed over goes to its
+	 * program's staged set. */
+	void collect_built_pipelines();
+	/* The recording thread, the builders joined: collects the rest and
+	 * frees the queues. */
+	void close_pipeline_handoff();
 	void record_graphics_pipeline(const DeferredPipelineCompile &compile);
 	unsigned get_graphics_pipeline_records(const GraphicsPipelineRecord **records) const;
 	/* The compatible render pass a signature describes, made again from
@@ -828,6 +846,8 @@ private:
 	ComputePipelineRecord *compute_records = nullptr;
 	PGS::atomic_uint32_t compute_records_claimed;
 	PGS::atomic_uint32_t compute_records_written;
+	::retro_spsc *handoff = nullptr;
+	unsigned num_handoff = 0;
 	GraphicsPipelineRecord *graphics_records = nullptr;
 	PGS::atomic_uint32_t graphics_records_claimed;
 	PGS::atomic_uint32_t graphics_records_written;

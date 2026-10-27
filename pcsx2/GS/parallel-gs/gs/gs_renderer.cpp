@@ -523,6 +523,9 @@ void GSRenderer::drain_compilation_tasks()
 	for (auto &task : compilation_tasks)
 		task->thread.join();
 	compilation_tasks.clear();
+	/* What they built and nothing took is the programs' to destroy. */
+	if (device)
+		device->close_pipeline_handoff();
 }
 
 void GSRenderer::stop_compilation_tasks()
@@ -550,6 +553,11 @@ void GSRenderer::drain_compilation_tasks_nonblock()
 		return true;
 	});
 	compilation_tasks.erase(itr, compilation_tasks.end());
+	if (handoff_open && compilation_tasks.empty())
+	{
+		device->close_pipeline_handoff();
+		handoff_open = false;
+	}
 }
 
 bool GSRenderer::can_potentially_super_sample() const
@@ -934,6 +942,17 @@ void GSRenderer::kick_compilation_tasks(const GSOptions &options)
 	if (target_threads == 0)
 		target_threads = 1;
 
+	/* Each thread hands over through a queue of its own, as long as the
+	 * jobs it is dealt; without the queues nothing is built ahead. */
+	{
+		std::vector<size_t> jobs(target_threads);
+		for (size_t thread_index = 0; thread_index < target_threads; thread_index++)
+			jobs[thread_index] = (num_tasks + target_threads - 1 - thread_index) / target_threads;
+		handoff_open = device->open_pipeline_handoff(unsigned(target_threads), jobs.data());
+		if (!handoff_open)
+			return;
+	}
+
 	for (size_t thread_index = 0; thread_index < target_threads; thread_index++)
 	{
 		/* Dealt in turn, so every thread starts on the recorded ones. */
@@ -947,7 +966,8 @@ void GSRenderer::kick_compilation_tasks(const GSOptions &options)
 		auto *task_state = async_task.get();
 		task_state->done.store(false, PGS::memory_order_relaxed);
 
-		task_state->thread = PGS::thread([this, task_state, moved_tasks = std::move(deferred)]()
+		const unsigned builder = unsigned(thread_index);
+		task_state->thread = PGS::thread([this, task_state, builder, moved_tasks = std::move(deferred)]()
 		{
 			// Compiles pipelines only, never records a command buffer,
 			// so it can share index 0 rather than take a pool of its own.
@@ -958,12 +978,13 @@ void GSRenderer::kick_compilation_tasks(const GSOptions &options)
 				// If we destroy the device before threads are done spinning.
 				if (!compilation_tasks_active)
 					break;
-				if (task.program->get_shader(Vulkan::ShaderStage::Compute))
-					Vulkan::CommandBuffer::build_compute_pipeline(
+				Vulkan::Pipeline built = task.program->get_shader(Vulkan::ShaderStage::Compute)
+					? Vulkan::CommandBuffer::build_compute_pipeline(
+							device, task, Vulkan::CommandBuffer::CompileMode::AsyncThread)
+					: Vulkan::CommandBuffer::build_graphics_pipeline(
 							device, task, Vulkan::CommandBuffer::CompileMode::AsyncThread);
-				else
-					Vulkan::CommandBuffer::build_graphics_pipeline(
-							device, task, Vulkan::CommandBuffer::CompileMode::AsyncThread);
+				if (built.pipeline != VK_NULL_HANDLE)
+					device->hand_over_pipeline(builder, task.program, task.hash, built);
 			}
 			// Published last: the non-blocking drain joins on seeing this.
 			task_state->done.store(true, PGS::memory_order_release);
