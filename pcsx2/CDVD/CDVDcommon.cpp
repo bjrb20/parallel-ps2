@@ -24,7 +24,8 @@
 
 #include "IsoFS/IsoFS.h"
 #include "IsoFS/SectorSource.h"
-#include "IsoFileFormats.h"
+#include "cdvd_iso.h"
+#include "CDVD.h"
 
 #include "../Config.h"
 
@@ -327,6 +328,7 @@ void CDVDsys_ChangeSource(CDVD_SourceType type)
 bool DoCDVDopen(void)
 {
 	CDVD->newDiskCB(cdvdNewDiskCB);
+	cdvd_iso_set_gz_index(EmuConfig.GzipIsoIndexTemplate, EmuFolders::DataRoot);
 
 	auto CurrentSourceType = enum_cast(m_CurrentSourceType);
 	int ret = CDVD->open(!m_SourceFilename[CurrentSourceType][0] == '\0' ? m_SourceFilename[CurrentSourceType] : nullptr);

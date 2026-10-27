@@ -93,11 +93,6 @@
     <!-- Generate Recording GUI Image Headers -->
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="CDVD\ChdFileReader.cpp" />
-    <ClCompile Include="CDVD\CsoFileReader.cpp" />
-    <ClCompile Include="CDVD\FlatFileReader.cpp" />
-    <ClCompile Include="CDVD\GzippedFileReader.cpp" />
-    <ClCompile Include="CDVD\ThreadedFileReader.cpp" />
     <ClCompile Include="DEV9\AdapterUtils.cpp" />
     <ClCompile Include="DEV9\ATA\Commands\ATA_Command.c" />
     <ClCompile Include="DEV9\ATA\Commands\ATA_CmdDMA.c" />
@@ -218,7 +213,6 @@
     <ClCompile Include="Pcsx2Config.cpp" />
     <ClCompile Include="SaveState.cpp" />
     <ClCompile Include="Elfheader.cpp" />
-    <ClCompile Include="CDVD\InputIsoFile.cpp" />
     <ClCompile Include="x86\BaseblockEx.cpp" />
     <ClCompile Include="ps2\BiosTools.cpp" />
     <ClCompile Include="Counters.cpp" />
@@ -293,8 +287,14 @@
     <ClCompile Include="CDVD\Ps1CD.cpp" />
     <ClCompile Include="CDVD\CDVD.cpp" />
     <ClCompile Include="CDVD\CDVDnvram.c" />
+    <ClCompile Include="CDVD\CDVDisoReader.c" />
+    <ClCompile Include="CDVD\cdvd_reader.c" />
+    <ClCompile Include="CDVD\cdvd_flat.c" />
+    <ClCompile Include="CDVD\cdvd_cso.c" />
+    <ClCompile Include="CDVD\cdvd_chd.c" />
+    <ClCompile Include="CDVD\cdvd_gz.c" />
+    <ClCompile Include="CDVD\cdvd_iso.c" />
     <ClCompile Include="CDVD\CDVDcommon.cpp" />
-    <ClCompile Include="CDVD\CDVDisoReader.cpp" />
     <ClCompile Include="GS.cpp" />
     <ClCompile Include="MTGS.cpp" />
     <ClCompile Include="x86\ix86-32\iCore-32.cpp" />
@@ -304,12 +304,9 @@
     <ClCompile Include="CDVD\IsoFS\IsoFSCDVD.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="CDVD\CsoFileReader.h" />
-    <ClInclude Include="CDVD\ChdFileReader.h" />
-    <ClCompile Include="CDVD\FlatFileReader.h" />
-    <ClInclude Include="CDVD\GzippedFileReader.h" />
-    <ClInclude Include="CDVD\ThreadedFileReader.h" />
     <ClInclude Include="CDVD\zlib_indexed.h" />
+    <ClInclude Include="CDVD\cdvd_reader.h" />
+    <ClInclude Include="CDVD\cdvd_iso.h" />
     <ClInclude Include="DEV9\AdapterUtils.h" />
     <ClInclude Include="DEV9\ATA\ATA.h" />
     <ClInclude Include="DEV9\ATA\HddCreate.h" />
@@ -433,7 +430,6 @@
     <ClInclude Include="USB\shared\ringbuffer.h" />
     <ClInclude Include="USB\USB.h" />
     <ClInclude Include="Elfheader.h" />
-    <ClInclude Include="CDVD\IsoFileFormats.h" />
     <ClInclude Include="Common.h" />
     <ClInclude Include="Config.h" />
     <ClInclude Include="SaveState.h" />

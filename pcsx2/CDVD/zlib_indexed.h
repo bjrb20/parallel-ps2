@@ -101,6 +101,10 @@ Comments) 1950 to 1952 in the files http://tools.ietf.org/html/rfc1950
 #include <stdlib.h>
 #include <string.h>
 #include <encodings/deflate.h>
+#include <retro_inline.h>
+#include <streams/file_stream.h>
+
+#include "../../common/Pcsx2Types.h"
 
 /* zlib-compatible status values kept for the existing callers */
 #define ZIDX_OK          0
@@ -108,9 +112,6 @@ Comments) 1950 to 1952 in the files http://tools.ietf.org/html/rfc1950
 #define ZIDX_DATA_ERROR (-3)
 #define ZIDX_MEM_ERROR  (-4)
 
-#include "HostFS.h"
-
-//#define SPAN (1048576L)  /* desired distance between access points */
 #define WINSIZE 32768U    /* sliding window size */
 #define CHUNK (64 * 1024) /* file input buffer size */
 
@@ -155,7 +156,7 @@ typedef struct access Access;
 #endif
 
 /* Deallocate an index built by build_index() */
-static inline void free_index(struct access* index)
+static INLINE void free_index(struct access* index)
 {
 	if (index != NULL)
 	{
@@ -166,7 +167,7 @@ static inline void free_index(struct access* index)
 
 /* Add an entry to the access point list.  If out of memory, deallocate the
    existing list and return NULL. */
-static inline struct access* addpoint(struct access* index, int bits,
+static INLINE struct access* addpoint(struct access* index, int bits,
 							  s64 in, s64 out, unsigned left, unsigned char* window)
 {
 	struct point* next;
@@ -223,7 +224,7 @@ static inline struct access* addpoint(struct access* index, int bits,
    returns the number of access points on success (>= 1), Z_MEM_ERROR for out
    of memory, Z_DATA_ERROR for an error in the input file, or Z_ERRNO for a
    file read error.  On success, *built points to the resulting index. */
-static inline int build_index(RFILE* in, s64 span, struct access** built)
+static INLINE int build_index(RFILE* in, s64 span, struct access** built)
 {
 	/* rinflate port of the zran builder: stop-at-block reporting plus
 	   the exact bit tell replace Z_BLOCK/data_type, and the decoder's
@@ -314,7 +315,7 @@ static inline int build_index(RFILE* in, s64 span, struct access** built)
 				const s64 in_off   = (s64)((abs_bits + 7) / 8);
 				const int bits     = (int)((8 - (abs_bits & 7)) & 7);
 				index = addpoint(index, bits, in_off, totout,
-						(uint)(WINSIZE - win_fill), window);
+						(unsigned)(WINSIZE - win_fill), window);
 				if (index == NULL)
 				{
 					ret = ZIDX_MEM_ERROR;
@@ -353,34 +354,34 @@ typedef struct zstate
 {
 	s64 out_offset;
 	s64 in_offset;
+	s64 in_end;          /* file offset just past the buffered input */
 	void* strm; /* rinflate raw stream, live between sequential extracts */
 	unsigned char* work; /* extract's input chunk and discard window, kept */
+	/* Input still buffered in work for the live stream, so a sequential
+	 * extract goes on from it instead of reading it again. */
+	size_t in_avail;
+	size_t in_used;
 	int isValid;
-} Zstate;
+} zstate;
 
-static inline void zstate_free_strm(zstate* state)
+static INLINE void zstate_free_strm(zstate* state)
 {
 	if (state && state->strm)
 	{
 		rinflate_free(state->strm);
-		state->strm = nullptr;
+		state->strm = NULL;
 	}
 }
 
 /* Everything the state holds: the stream and the work buffer. */
-static inline void zstate_free(zstate* state)
+static INLINE void zstate_free(zstate* state)
 {
 	zstate_free_strm(state);
 	if (state)
 	{
 		free(state->work);
-		state->work = nullptr;
+		state->work = NULL;
 	}
-}
-
-static inline s64 getInOffset(zstate* state)
-{
-	return state->in_offset;
 }
 
 /* Use the index to read len bytes from offset into buf, return bytes read or
@@ -390,7 +391,7 @@ static inline s64 getInOffset(zstate* state)
    should not return a data error unless the file was modified since the index
    was generated.  extract() may also return Z_ERRNO if there is an error on
    reading or seeking the input file. */
-static inline int extract(RFILE* in, struct access* index, s64 offset,
+static INLINE int extract(RFILE* in, struct access* index, s64 offset,
 				  unsigned char* buf, int len, zstate* state)
 {
 	int ret = ZIDX_OK, skip;
@@ -400,9 +401,9 @@ static inline int extract(RFILE* in, struct access* index, s64 offset,
 	int isEnd = 0;
 	size_t in_avail = 0, in_used = 0;
 	size_t out_size = 0, out_done = 0;
-	unsigned char* out_ptr = nullptr;
+	unsigned char* out_ptr = NULL;
 
-	if (len < 0 || state == nullptr)
+	if (len < 0 || state == NULL)
 		return 0;
 	if (!state->work)
 		state->work = (unsigned char*)malloc(CHUNK + WINSIZE);
@@ -411,29 +412,34 @@ static inline int extract(RFILE* in, struct access* index, s64 offset,
 	input   = state->work;
 	discard = state->work + CHUNK;
 
-	if (state->isValid && offset != state->out_offset)
-	{
-		zstate_free_strm(state);
-		state->isValid = 0;
-	}
-	state->out_offset = offset;
+	/* the access point at or before offset */
+	here = index->list;
+	ret = index->have;
+	while (--ret && here[1].out <= offset)
+		here++;
 
-	if (state->isValid)
+	if (state->isValid && state->out_offset <= offset && state->out_offset >= here->out)
 	{
-		/* sequential continuation: the live stream is positioned right
-		   where the previous extract stopped */
+		/* The live stream stopped at or before offset and no earlier than
+		   the access point: going on from it decodes less than starting
+		   over, the rest of its input still buffered. */
+		const s64 ahead = offset - state->out_offset;
 		state->isValid = 0;
-		filestream_seek(in, state->in_offset, RETRO_VFS_SEEK_POSITION_START);
-		offset = 0;
+		state->out_offset = offset;
+		in_avail = state->in_avail;
+		in_used  = state->in_used;
+		if (filestream_seek(in, state->in_end, RETRO_VFS_SEEK_POSITION_START) == -1)
+		{
+			ret = ZIDX_ERRNO;
+			goto extract_ret;
+		}
+		offset = ahead;
 		skip = 1;
 	}
 	else
 	{
-		here = index->list;
-		ret = index->have;
-		while (--ret && here[1].out <= offset)
-			here++;
-
+		state->isValid = 0;
+		state->out_offset = offset;
 		zstate_free_strm(state);
 		state->strm = rinflate_new(-15); /* raw inflate */
 		if (!state->strm)
@@ -488,8 +494,9 @@ static inline int extract(RFILE* in, struct access* index, s64 offset,
 			if (in_used == in_avail)
 			{
 				state->in_offset = filestream_tell(in);
-				in_avail = filestream_read(in, input, CHUNK);
+				in_avail = (size_t)filestream_read(in, input, CHUNK);
 				in_used = 0;
+				state->in_end = state->in_offset + (s64)in_avail;
 				if (filestream_error(in))
 				{
 					ret = ZIDX_ERRNO;
@@ -536,6 +543,8 @@ extract_ret:
 	if (!isEnd && ret == len && out_ptr == buf)
 	{
 		state->out_offset += len;
+		state->in_avail = in_avail;
+		state->in_used = in_used;
 		state->isValid = 1;
 	}
 	else

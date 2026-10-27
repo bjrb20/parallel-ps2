@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Wrap a disc image in a CISO v1 container, for testing CsoFileReader.
+"""Wrap a disc image in a CISO v1 container, for testing the CSO reader.
 
-The compressed CDVD readers had no test coverage at all: a .cue exercises
-FlatFileReader and nothing else, so any change to CsoFileReader,
-GzippedFileReader or ChdFileReader was unverifiable. This produces a real
+A .cue exercises only the flat reader, so a change to the CSO, gzip or CHD
+reader (pcsx2/CDVD/cdvd_*.c) needs an image in that format. This produces a real
 .cso from an existing image, which turns the CSO path into a gate:
 
     python3 tests/cdvd/make_cso.py game.bin game.cso
@@ -16,7 +15,7 @@ the flat reader does -- which is a stronger check than either run alone:
     PCSX2_FBHASH=1 headless core game.cso  1200 sys | grep FBHASH > cso.txt
     diff flat.txt cso.txt
 
-Format, from CsoFileReader.cpp: a 24-byte header, then (frames + 1) 32-bit
+Format, from pcsx2/CDVD/cdvd_cso.c: a 24-byte header, then (frames + 1) 32-bit
 index entries, then the frame payloads. An index entry is the file offset of
 its frame; the top bit means the frame is stored uncompressed. A frame's
 compressed length is the difference between consecutive index entries, which

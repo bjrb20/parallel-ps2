@@ -1,36 +1,38 @@
 #!/bin/sh
-# The chunked CDVD reader hands back the bytes the file holds.
+# The CDVD image readers hand back the bytes the image holds. The readers
+# and the test are C89. Plain, and with SANITIZER passed through.
+# Runnable from ANY directory - paths resolve relative to this script.
 set -e
-DIR=$(cd "$(dirname "$0")" && pwd)
-ROOT=$(cd "$DIR/../.." && pwd)
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT=$(CDPATH= cd -- "$DIR/../.." && pwd)
 LC="$ROOT/libretro/libretro-common"
 OBJ="$DIR/.obj"
-SANFLAGS="${SANFLAGS:-}"
-INC="-I $ROOT -I $ROOT/pcsx2 -I $ROOT/common -I $ROOT/common/include -I $ROOT/3rdparty/include -I $LC/include"
+CC=${CC:-cc}
+SANFLAGS=""
+[ -n "$SANITIZER" ] && SANFLAGS="-fsanitize=$SANITIZER"
+INC="-I $ROOT -I $ROOT/pcsx2 -I $ROOT/common -I $LC/include"
+DEFS="-D__LIBRETRO__ -DHAVE_RCHD_DEFLATE -DHAVE_RCHD_LZMA -DHAVE_RCHD_FLAC -DHAVE_RCHD_ZSTD"
+# MSVC's C89: gnu89 takes the // comments common/ carries, as MSVC does,
+# and the errors are what MSVC rejects.
+C89="-std=gnu89 -Wall -Werror=declaration-after-statement -Werror=implicit-function-declaration"
 rm -rf "$OBJ" && mkdir -p "$OBJ"
 
-# C and C++ get their own compiler: libretro-common is C and does not
-# build as C++.
 for c in streams/file_stream vfs/vfs_implementation compat/fopen_utf8 \
          encodings/encoding_utf compat/compat_strl file/file_path \
-         file/file_path_io time/rtime string/stdstring string/rstrtod \
-         formats/chd/rchd formats/flac/rflac formats/yaml/ryaml \
+         file/file_path_io file/retro_dirent time/rtime string/stdstring \
+         string/rstrtod formats/chd/rchd formats/flac/rflac formats/yaml/ryaml \
          formats/7z/r7z_lzma encodings/encoding_rzstd \
          encodings/encoding_huffman encodings/encoding_deflate \
          encodings/encoding_crc32 encodings/encoding_rlz4 \
          streams/trans_stream streams/trans_stream_deflate \
          streams/trans_stream_pipe features/features_cpu; do
-	${CC:-cc} -O1 -w $SANFLAGS $INC -c "$LC/$c.c" -o "$OBJ/$(echo $c | tr / _).o"
+	"$CC" -O1 -g -w $SANFLAGS $DEFS $INC -c "$LC/$c.c" -o "$OBJ/$(echo $c | tr / _).o"
 done
-${CC:-cc} -O1 -w $SANFLAGS $INC -c "$ROOT/pcsx2/memcard_ecc.c" -o "$OBJ/memcard_ecc.o"
-
-${CXX:-c++} -std=c++17 -O1 -w $SANFLAGS $INC \
-	-o "$DIR/cdvd_read" "$DIR/main.cpp" \
-	"$ROOT/pcsx2/CDVD/ThreadedFileReader.cpp" "$ROOT/pcsx2/CDVD/InputIsoFile.cpp" \
-	"$ROOT/pcsx2/CDVD/FlatFileReader.cpp" "$ROOT/pcsx2/CDVD/CsoFileReader.cpp" \
-	"$ROOT/pcsx2/CDVD/GzippedFileReader.cpp" "$ROOT/pcsx2/CDVD/ChdFileReader.cpp" \
-	"$ROOT/pcsx2/Pcsx2Config.cpp" "$ROOT/pcsx2/MemoryCardFile.cpp" \
-	"$ROOT/pcsx2/StringView.cpp" "$ROOT/pcsx2/FormatString.cpp" \
-	"$OBJ"/*.o -lpthread
+for c in cdvd_reader cdvd_flat cdvd_cso cdvd_chd cdvd_gz cdvd_iso CDVDisoReader; do
+	"$CC" $C89 -O1 -g $SANFLAGS $DEFS $INC \
+		-c "$ROOT/pcsx2/CDVD/$c.c" -o "$OBJ/$c.o"
+done
+"$CC" $C89 -O1 -g $SANFLAGS $DEFS $INC \
+	-o "$DIR/cdvd_read" "$DIR/main.c" "$OBJ"/*.o -lpthread
 rm -rf "$OBJ"
 "$DIR/cdvd_read" "$DIR"

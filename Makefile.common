@@ -110,6 +110,13 @@ SOURCES_C += \
 	$(LRPS2_DIR)/USB/libretro-usb/ohci_dma.c \
 	$(LRPS2_DIR)/memcard_ecc.c \
 	$(LRPS2_DIR)/CDVD/CDVDnvram.c \
+	$(LRPS2_DIR)/CDVD/CDVDisoReader.c \
+	$(LRPS2_DIR)/CDVD/cdvd_reader.c \
+	$(LRPS2_DIR)/CDVD/cdvd_flat.c \
+	$(LRPS2_DIR)/CDVD/cdvd_cso.c \
+	$(LRPS2_DIR)/CDVD/cdvd_chd.c \
+	$(LRPS2_DIR)/CDVD/cdvd_gz.c \
+	$(LRPS2_DIR)/CDVD/cdvd_iso.c \
 	$(LRPS2_DIR)/NearPlace.c \
 	$(LRPS2_DIR)/Memory.c \
 	$(LRPS2_DIR)/VirtualMemory.c \
@@ -323,14 +330,7 @@ SOURCES_CXX += \
 SOURCES_CXX += \
 	$(LRPS2_DIR)/CDVD/CDVD.cpp \
 	$(LRPS2_DIR)/CDVD/CDVDcommon.cpp \
-	$(LRPS2_DIR)/CDVD/CDVDisoReader.cpp \
-	$(LRPS2_DIR)/CDVD/ChdFileReader.cpp \
-	$(LRPS2_DIR)/CDVD/CsoFileReader.cpp \
-	$(LRPS2_DIR)/CDVD/FlatFileReader.cpp \
-	$(LRPS2_DIR)/CDVD/GzippedFileReader.cpp \
-	$(LRPS2_DIR)/CDVD/InputIsoFile.cpp \
 	$(LRPS2_DIR)/CDVD/Ps1CD.cpp \
-	$(LRPS2_DIR)/CDVD/ThreadedFileReader.cpp \
 	$(LRPS2_DIR)/CDVD/IsoFS/IsoFile.cpp \
 	$(LRPS2_DIR)/CDVD/IsoFS/IsoFS.cpp \
 	$(LRPS2_DIR)/CDVD/IsoFS/IsoFSCDVD.cpp
@@ -644,7 +644,7 @@ SOURCES_C += $(LIBRETRO_COMM_DIR)/encodings/encoding_rlz4.c
 
 # CHD: libretro-common's clean-room rchd stack (rchd + rflac + rzstd +
 # r7z_lzma + huffman/deflate/crc32), replacing vendored libchdr.  The
-# decoder does no I/O of its own - ChdFileReader drives it, feeding from
+# decoder does no I/O of its own - the CHD reader (pcsx2/CDVD/cdvd_chd.c) drives it, feeding from
 # a mapped image when the VFS provides one.
 SOURCES_C += \
 	$(LIBRETRO_COMM_DIR)/formats/chd/rchd.c \

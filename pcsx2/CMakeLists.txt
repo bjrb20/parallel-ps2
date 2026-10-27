@@ -237,13 +237,13 @@ set(pcsx2CDVDSources
 	CDVD/CDVDcommon.cpp
 	CDVD/CDVD.cpp
 	CDVD/CDVDnvram.c
-	CDVD/CDVDisoReader.cpp
-	CDVD/FlatFileReader.cpp
-	CDVD/InputIsoFile.cpp
-	CDVD/ChdFileReader.cpp
-	CDVD/CsoFileReader.cpp
-	CDVD/GzippedFileReader.cpp
-	CDVD/ThreadedFileReader.cpp
+	CDVD/CDVDisoReader.c
+	CDVD/cdvd_reader.c
+	CDVD/cdvd_flat.c
+	CDVD/cdvd_cso.c
+	CDVD/cdvd_chd.c
+	CDVD/cdvd_gz.c
+	CDVD/cdvd_iso.c
 	CDVD/IsoFS/IsoFile.cpp
 	CDVD/IsoFS/IsoFSCDVD.cpp
 	CDVD/IsoFS/IsoFS.cpp
@@ -256,18 +256,14 @@ set(pcsx2CDVDHeaders
 	CDVD/CDVD.h
 	CDVD/CDVDnvram.h
 	CDVD/CDVD_internal.h
-	CDVD/ChdFileReader.h
-	CDVD/CsoFileReader.h
-	CDVD/FlatFileReader.h
-	CDVD/GzippedFileReader.h
-	CDVD/ThreadedFileReader.h
-	CDVD/IsoFileFormats.h
 	CDVD/IsoFS/IsoDirectory.h
 	CDVD/IsoFS/IsoFileDescriptor.h
 	CDVD/IsoFS/IsoFile.h
 	CDVD/IsoFS/IsoFS.h
 	CDVD/IsoFS/SectorSource.h
 	CDVD/zlib_indexed.h
+	CDVD/cdvd_reader.h
+	CDVD/cdvd_iso.h
 	)
 
 # SPU2 sources

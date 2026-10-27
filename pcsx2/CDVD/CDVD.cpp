@@ -40,7 +40,7 @@
 
 #include <compat/fnmatch.h>
 #include "CDVD_internal.h"
-#include "IsoFileFormats.h"
+#include "cdvd_iso.h"
 
 #include "../GS.h" // for gsVideoMode
 #include "../Counters.h" // for UpdateVSyncRate
