@@ -121,6 +121,21 @@ for renderer in Vulkan paraLLEl-GS; do
 	fi
 done
 
+# An 8x8 upload in one IMAGE packet, which the renderer takes from the
+# packet as it lies, and the same in two packets: the block holds the
+# data either way, on both renderers.
+for c in upload_whole upload_split; do
+	"$SCRATCH/swdraw" --bios "$SCRATCH/$c.bin" $c
+	for renderer in Vulkan paraLLEl-GS; do
+		if ! VN_EXPECT_RUN=00123456 VN_IDLE_BIOS=1 LRPS2_BIOS="$SCRATCH/$c.bin" VN_RENDERER=$renderer \
+				timeout 300 "$DIR/vknegotiate" "$CORE" "$SCRATCH" v2; then
+			rm -rf "$SCRATCH"
+			echo "  FAIL: $c, $renderer"
+			exit 1
+		fi
+	done
+done
+
 # 64 points, one on each pixel of a block, read back: the block holds
 # the colour on both renderers.
 "$SCRATCH/swdraw" --bios "$SCRATCH/points.bin" points

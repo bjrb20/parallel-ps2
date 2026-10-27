@@ -576,6 +576,35 @@ static void case_upload_short(void)
 	s_run_frames = 60;
 }
 
+/* An 8x8 24-bit host to local transfer of 0x123456 into block 0: in one
+ * IMAGE packet of 12 quadwords (upload_whole), or in two of 6 each
+ * (upload_split). Either way the block holds 64 words of 0x00123456 -
+ * which the packet does not: its pixels are three bytes each, so its
+ * words go round 0x56123456, 0x34561234, 0x12345612. */
+static void upload_block(unsigned packets)
+{
+	static const unsigned words[3] = { 0x56123456u, 0x34561234u, 0x12345612u };
+	unsigned p, i, w = 0;
+	qw(5 | 0x8000u, 0x10000000u, 0xEu, 0);                 /* A+D, NLOOP 5, EOP */
+	qw(1, 0, GS_PRMODECONT, 0);
+	qw(0, (1u << 16) | (1u << 24), GS_BITBLTBUF, 0);       /* DBP 0, DBW 1, PSMCT24 */
+	qw(0, 0, GS_TRXPOS, 0);
+	qw(8, 8, GS_TRXREG, 0);
+	qw(0, 0, GS_TRXDIR, 0);                                /* host to local */
+	for (p = 0; p < packets; p++)
+	{
+		qw((12 / packets) | 0x8000u, 0x08000000u, 0, 0);   /* IMAGE, EOP */
+		for (i = 0; i < 12 / packets; i++, w += 4)
+			qw(words[w % 3], words[(w + 1) % 3], words[(w + 2) % 3], words[(w + 3) % 3]);
+	}
+	kick(0, s_qw_count, 0);
+	s_run_frames    = 60;
+	s_expect_run[0] = 0x00123456ul;
+}
+
+static void case_upload_whole(void) { upload_block(1); }
+static void case_upload_split(void) { upload_block(2); }
+
 /* Two flat right triangles 4000 pixels on a side that form a square,
  * as a pair of triangles fused into a quad would be: the renderer's
  * tests on their sides and areas hold for coordinates that large (a
@@ -935,6 +964,8 @@ static const struct { const char* name; void (*build)(void); const char* scale; 
 	{ "dest_alpha",      case_dest_alpha,    "1" },
 	{ "many_copies",     case_many_copies,   "1" },
 	{ "upload_short",    case_upload_short,  "1" },
+	{ "upload_whole",    case_upload_whole,  "1" },
+	{ "upload_split",    case_upload_split,  "1" },
 	{ "big_triangles",   case_big_triangles, "1" },
 	{ "present",         case_present,       "1" },
 	{ "points",          case_points,        "1" },

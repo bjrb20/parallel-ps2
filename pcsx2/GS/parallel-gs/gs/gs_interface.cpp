@@ -3075,8 +3075,13 @@ void GSInterface::check_pending_transfer()
 
 void GSInterface::flush_pending_transfer(bool keep_alive)
 {
+	const uint64_t *payload = transfer_state.direct
+		? transfer_state.direct : transfer_state.host_to_local_payload.data();
+	const size_t payload_qwords = transfer_state.direct
+		? transfer_state.direct_qwords : transfer_state.host_to_local_payload.size();
+
 	if (transfer_state.host_to_local_active &&
-	    transfer_state.host_to_local_payload.size() > transfer_state.last_flushed_qwords)
+	    payload_qwords > transfer_state.last_flushed_qwords)
 	{
 #ifdef PARALLEL_GS_DEBUG
 		if (transfer_state.copy.bitbltbuf.bits != registers.bitbltbuf.bits)
@@ -3097,8 +3102,8 @@ void GSInterface::flush_pending_transfer(bool keep_alive)
 
 		bool copy_cpu = false;
 
-		transfer_state.copy.host_data = transfer_state.host_to_local_payload.data();
-		transfer_state.copy.host_data_size = transfer_state.host_to_local_payload.size() * sizeof(uint64_t);
+		transfer_state.copy.host_data = payload;
+		transfer_state.copy.host_data_size = payload_qwords * sizeof(uint64_t);
 		transfer_state.copy.host_data_size_offset = transfer_state.last_flushed_qwords * sizeof(uint64_t);
 		transfer_state.copy.host_data_size_required = transfer_state.required_qwords * sizeof(uint64_t);
 
@@ -3229,7 +3234,7 @@ void GSInterface::flush_pending_transfer(bool keep_alive)
 
 		// Very possible we just have to flush early and we never receive more image data until
 		// game kicks a new transfer.
-		transfer_state.last_flushed_qwords = uint32_t(transfer_state.host_to_local_payload.size());
+		transfer_state.last_flushed_qwords = uint32_t(payload_qwords);
 		tracker.invalidate_texture_cache(render_pass.clut_instance);
 		invalidate_promoted_backbuffer(transfer_state.copy.bitbltbuf.desc.DBP / PGS_BLOCKS_PER_PAGE);
 
@@ -4127,6 +4132,16 @@ void GSInterface::a_d_HWREG_multi(const uint64_t *payload, size_t count)
 {
 	if (transfer_state.host_to_local_active)
 	{
+		/* The whole transfer in this packet: flushed from it as it lies. */
+		if (transfer_state.host_to_local_payload.empty() && count >= transfer_state.required_qwords)
+		{
+			transfer_state.direct        = payload;
+			transfer_state.direct_qwords = count;
+			flush_pending_transfer(false);
+			transfer_state.direct        = nullptr;
+			transfer_state.direct_qwords = 0;
+			return;
+		}
 		transfer_state.host_to_local_payload.insert(transfer_state.host_to_local_payload.end(),
 													payload, payload + count);
 		// Flush out transfer if enough data has been received.

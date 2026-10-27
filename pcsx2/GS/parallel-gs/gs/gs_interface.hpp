@@ -358,6 +358,10 @@ private:
 	struct TransferState
 	{
 		std::vector<uint64_t> host_to_local_payload;
+		/* A transfer whose data came in one packet is flushed from the
+		 * packet itself, not from a copy of it in the vector above. */
+		const uint64_t *direct = nullptr;
+		size_t direct_qwords = 0;
 		bool host_to_local_active = false;
 		uint32_t required_qwords = 0;
 		uint32_t last_flushed_qwords = 0;
