@@ -24,6 +24,10 @@
  * the renderer (Vulkan, the default, or paraLLEl-GS); VN_EXPECT_RUN names
  * 32-bit words the state at the end must hold 64 of each in a row, and
  * VN_CORRUPT_SHADER_INDEX damages the shader cache a previous run left.
+ * VN_DUMP_STATE names a file the state after the frames is written to,
+ * and VN_TIMING has the longest frame after the first reported.
+ * VN_LOAD_PAUSE_MS leaves that long between the context reset and the
+ * first frame, as a frontend's own loading does.
  *
  * Usage: vknegotiate <path-to-core> <scratch-dir> <v2|v2retry|v1> */
 
@@ -42,6 +46,14 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <direct.h>
+static double vn_now_ms(void)
+{
+	LARGE_INTEGER f, c;
+	QueryPerformanceFrequency(&f);
+	QueryPerformanceCounter(&c);
+	return (double)c.QuadPart * 1000.0 / (double)f.QuadPart;
+}
+static void vn_pause_ms(unsigned ms) { Sleep(ms); }
 #define VN_HANDLE HMODULE
 #define vn_dlopen(p) LoadLibraryA(p)
 #define vn_mkdir(p) _mkdir(p)
@@ -49,6 +61,20 @@
 #else
 #include <dlfcn.h>
 #include <sys/stat.h>
+#include <time.h>
+static double vn_now_ms(void)
+{
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return (double)t.tv_sec * 1000.0 + (double)t.tv_nsec / 1e6;
+}
+static void vn_pause_ms(unsigned ms)
+{
+	struct timespec t;
+	t.tv_sec  = ms / 1000;
+	t.tv_nsec = (long)(ms % 1000) * 1000000L;
+	nanosleep(&t, NULL);
+}
 #define VN_HANDLE void*
 #define vn_dlopen(p) dlopen((p), RTLD_NOW | RTLD_LOCAL)
 #define vn_mkdir(p) mkdir((p), 0755)
@@ -653,10 +679,40 @@ int main(int argc, char** argv)
 	s_vk.set_signal_semaphore   = vn_set_sem;
 	if (s_hw.context_reset)
 		s_hw.context_reset();
+	if (getenv("VN_LOAD_PAUSE_MS"))
+		vn_pause_ms((unsigned)atoi(getenv("VN_LOAD_PAUSE_MS")));
 
-	for (frame = 0; frame < frames; frame++)
-		run();
+	{
+		double longest = 0.0, first = 0.0;
+		for (frame = 0; frame < frames; frame++)
+		{
+			const double t0 = vn_now_ms();
+			double dt;
+			run();
+			dt = vn_now_ms() - t0;
+			if (frame == 0)
+				first = dt;
+			else if (dt > longest)
+				longest = dt;
+		}
+		if (getenv("VN_TIMING"))
+			printf("  first frame: %.2f ms, longest frame after the first: %.2f ms\n", first, longest);
+	}
 	printf("  %d frames run, %u presented, %u duped, %u as images\n", frames, s_frames, s_dupes, s_images);
+	/* VN_DUMP_STATE: the state after the frames, for another run's to be
+	 * compared with. */
+	if (getenv("VN_DUMP_STATE"))
+	{
+		size_t size = serialize_size();
+		void* state = size ? malloc(size) : NULL;
+		FILE* f;
+		if (!state || !serialize(state, size))
+			VN_FAIL("retro_serialize for VN_DUMP_STATE failed");
+		if (!(f = fopen(getenv("VN_DUMP_STATE"), "wb")) || fwrite(state, 1, size, f) != size)
+			VN_FAIL("cannot write %s", getenv("VN_DUMP_STATE"));
+		fclose(f);
+		free(state);
+	}
 	/* A savestate round trip between two frames: the drain the GS takes
 	 * for it, and the frames after it. */
 	{
