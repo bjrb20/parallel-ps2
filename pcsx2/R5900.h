@@ -362,6 +362,10 @@ extern uint dmacInterrupt();
 
 extern void cpuReset();
 extern void cpuException(u32 code, u32 bd);
+/* Memory.c's unmapped-page handlers raise it. */
+#ifdef __cplusplus
+extern "C"
+#endif
 void cpuTlbMiss(u32 addr, u32 bd, u32 excode);
 extern void GoemonPreloadTlb();
 extern void GoemonUnloadTlb(u32 key);

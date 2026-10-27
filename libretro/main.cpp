@@ -3253,7 +3253,7 @@ static bool state_read(const void* data, size_t size)
 static void state_quiesce(void)
 {
 	cpu_thread_pause();
-	vu1Thread.WaitVU();
+	mtvu_wait_vu();
 	MTGS::WaitGS(false);
 }
 

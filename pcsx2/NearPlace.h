@@ -19,6 +19,7 @@ extern "C" {
 #endif
 
 #define NEAR_MAX_CANDIDATES 32
+#define NEAR_MAX_GAPS 64
 
 typedef struct near_range
 {
@@ -40,6 +41,16 @@ typedef struct near_search
 	unsigned count;
 } near_search_t;
 
+/* The free ranges of the address space near the image, read once and
+ * searched as often as needed: placing main and then code beside it costs
+ * one read. Ranges smaller than min_size are not kept. */
+typedef struct near_space
+{
+	near_range_t gap[NEAR_MAX_GAPS];
+	size_t min_size;
+	unsigned count;
+} near_space_t;
+
 /* Grows r to cover add. */
 void near_hull(near_range_t *r, const near_range_t *add);
 
@@ -59,10 +70,43 @@ void near_search_gap(near_search_t *s, uintptr_t lo, uintptr_t hi);
 /* Offers every free range of this process's address space in the window. */
 void near_search_scan(near_search_t *s);
 
-/* Whether a size-byte reservation can be placed now with its hull with target
- * within limit: each candidate is reserved and released again until one sticks. */
-int near_place_room(const near_range_t *target, size_t size, uintptr_t limit,
-		uintptr_t align);
+/* Offers the few bases right outside the target without reading the address
+ * space; most placements succeed here. Run near_search_scan on a fresh
+ * search when none of them can be mapped. */
+void near_search_quick(near_search_t *s);
+
+/* Records the free ranges in [lo, hi). Returns 0 where the address space
+ * cannot be enumerated: near_search_scan then steps through hints. */
+int near_space_read(near_space_t *sp, uintptr_t lo, uintptr_t hi, size_t min_size);
+
+/* Offers the recorded ranges, less exclude when it is not NULL (a
+ * reservation placed since the read). */
+void near_search_space(near_search_t *s, const near_space_t *sp, const near_range_t *exclude);
+
+/* Places a main reservation and a code reservation so that the hull of the
+ * image, main and code spans at most limit: main within limit - code_size of
+ * the image and below main_ceiling (0: none), then code against the hull of
+ * image and main. The bases right outside the image are tried first; when
+ * that neighbourhood is taken, the address space is read once into sp and
+ * both are placed from it. The ops map each reservation exactly at a base
+ * (returning nonzero on success) and undo main when code does not fit
+ * beside it. Returns nonzero with both mapped. */
+typedef struct near_pair_ops
+{
+	int (*map_main)(void *ctx, uintptr_t base);
+	void (*unmap_main)(void *ctx);
+	int (*map_code)(void *ctx, uintptr_t base);
+	void *ctx;
+} near_pair_ops_t;
+
+int near_place_pair(near_space_t *sp, const near_range_t *image, size_t main_size,
+		uintptr_t main_ceiling, size_t code_size, uintptr_t limit, uintptr_t align,
+		const near_pair_ops_t *ops);
+
+/* near_place_pair over an address space the caller has filled sp with. */
+int near_place_pair_in(const near_space_t *sp, const near_range_t *image, size_t main_size,
+		uintptr_t main_ceiling, size_t code_size, uintptr_t limit, uintptr_t align,
+		const near_pair_ops_t *ops);
 
 #ifdef __cplusplus
 }

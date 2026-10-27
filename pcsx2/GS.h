@@ -21,10 +21,10 @@
 #include "GS/GS.h"
 
 #include "../common/SingleRegisterTypes.h"
+#include "GSmmio.h"
 
 extern double GetVerticalFrequency();
 extern u32 GetVerticalFrequencyMilliHz();
-alignas(16) extern u8 g_RealGSMem[Ps2MemSize::GSregs];
 
 enum CSR_FifoState
 {
@@ -169,8 +169,6 @@ struct GSRegSIGBLID
 	u32 LBLID;
 };
 
-#define PS2MEM_GS g_RealGSMem
-#define PS2GS_BASE(mem) (PS2MEM_GS + ((mem) & 0x13ff))
 
 #define CSRreg ((tGS_CSR&)*(PS2MEM_GS + 0x1000))
 
@@ -338,26 +336,6 @@ namespace MTGS
 extern void gsReset();
 extern void gsSetVideoMode(GS_VideoMode mode);
 
-extern void gsWrite8(u32 mem, u8 value);
-extern void gsWrite16(u32 mem, u16 value);
-extern void gsWrite32(u32 mem, u32 value);
-
-extern void gsWrite64_page_00(u32 mem, u64 value);
-extern void gsWrite64_page_01(u32 mem, u64 value);
-extern void gsWrite64_generic(u32 mem, u64 value);
-
-#if PCSX2_MINGW_R128_BY_PTR
-extern void gsWrite128_page_01(u32 mem, const r128* value);
-extern void gsWrite128_generic(u32 mem, const r128* value);
-#else
-extern void TAKES_R128 gsWrite128_page_01(u32 mem, r128 value);
-extern void TAKES_R128 gsWrite128_generic(u32 mem, r128 value);
-#endif
-
-extern u8 gsRead8(u32 mem);
-extern u16 gsRead16(u32 mem);
-extern u32 gsRead32(u32 mem);
-extern u64 gsRead64(u32 mem);
 extern retro_atomic_int_t s_GSRegistersWritten;
 
 // Size of the ringbuffer as a power of 2 -- size is a multiple of simd128s.

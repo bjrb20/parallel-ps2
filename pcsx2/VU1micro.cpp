@@ -37,7 +37,7 @@ void vu1Finish(bool add_cycles)
 	if (THREAD_VU1)
 	{
 		if (INSTANT_VU1 || add_cycles)
-			vu1Thread.WaitVU();
+			mtvu_wait_vu();
 		vu1Thread.Get_MTVUChanges();
 		return;
 	}

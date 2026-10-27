@@ -123,7 +123,7 @@ set(pcsx2Sources
 	IopIrq.cpp
 	IopMem.cpp
 	Mdec.cpp
-	Memory.cpp
+	Memory.c
 	MemoryCardFile.cpp
 	memcard_ecc.c
 	NearPlace.c
@@ -155,7 +155,7 @@ set(pcsx2Sources
 	Vif_Codes.cpp
 	Vif_Transfer.cpp
 	Vif_Unpack.cpp
-	VirtualMemory.cpp
+	VirtualMemory.c
 	vtlb.cpp
 	VU0.cpp
 	VUmicro.cpp
@@ -196,6 +196,7 @@ set(pcsx2Headers
 	MemoryCardFile.h
 	memcard_ecc.h
 	NearPlace.h
+	GSmmio.h
 	MemoryCardProtocol.h
 	MemoryTypes.h
 	MultitapProtocol.h
@@ -252,6 +253,7 @@ set(pcsx2CDVDHeaders
 	CDVD/Ps1CD.h
 	CDVD/CDVDcommon.h
 	CDVD/CDVD.h
+	CDVD/CDVDnvram.h
 	CDVD/CDVD_internal.h
 	CDVD/ChdFileReader.h
 	CDVD/CsoFileReader.h
@@ -350,7 +352,7 @@ set(pcsx2GSSources
 	GS/MultiISA.cpp
 	GS/Renderers/Common/GSDevice.cpp
 	GS/Renderers/Common/GSDirtyRect.cpp
-	GS/Renderers/Common/GSFunctionMap.cpp
+	GS/Renderers/Common/GSCodeReserve.c
 	GS/Renderers/Common/GSRenderer.cpp
 	GS/Renderers/Common/GSTexture.cpp
 	GS/Renderers/Common/GSVertexTrace.cpp
@@ -406,6 +408,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSDevice.h
 	GS/Renderers/Common/GSDirtyRect.h
 	GS/Renderers/Common/GSFastList.h
+	GS/Renderers/Common/GSCodeReserve.h
 	GS/Renderers/Common/GSFunctionMap.h
 	GS/Renderers/Common/GSRenderer.h
 	GS/Renderers/Common/GSTexture.h
@@ -770,6 +773,7 @@ set(pcsx2DEV9Headers
 	DEV9/ATA/HddCreate.h
 	DEV9/AdapterUtils.h
 	DEV9/DEV9.h
+	DEV9/DEV9mmio.h
 	DEV9/InternalServers/DHCP_Server.h
 	DEV9/InternalServers/DNS_Logger.h
 	DEV9/InternalServers/DNS_Server.h

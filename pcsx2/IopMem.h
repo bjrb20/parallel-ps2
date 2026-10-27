@@ -131,13 +131,24 @@ std::string iopMemReadString(u32 mem, int maxlen = 65536);
 /* C89-callable variant: fills dst (NUL-terminated, cap includes the NUL). */
 void iopMemReadStringBuf(char* dst, int cap, u32 mem, int maxlen);
 
+/* IOP main memory in the main map: points iopMem at it and allocates the
+ * LUTs, clears and maps it, and hands it back. */
+struct VirtualMemoryManager;
+extern void iop_memory_assign(const struct VirtualMemoryManager* main_map);
+extern void iop_memory_reset(void);
+extern void iop_memory_release(const struct VirtualMemoryManager* main_map);
+
 #ifdef __cplusplus
 }
 #endif
 
+/* The IOP hardware register handlers the EE's vtlb maps. C linkage, so
+ * Memory.c registers them; C++ keeps reaching them as IopMemory::. */
 #ifdef __cplusplus
 namespace IopMemory
 {
+extern "C" {
+#endif
 	extern mem8_t iopHwRead8_generic( u32 addr );
 	extern mem16_t iopHwRead16_generic( u32 addr );
 	extern mem32_t iopHwRead32_generic( u32 addr );
@@ -165,5 +176,7 @@ namespace IopMemory
 	extern void iopHwWrite32_Page1( u32 iopaddr, mem32_t data );
 	extern void iopHwWrite32_Page3( u32 iopaddr, mem32_t data );
 	extern void iopHwWrite32_Page8( u32 iopaddr, mem32_t data );
+#ifdef __cplusplus
+}
 }
 #endif

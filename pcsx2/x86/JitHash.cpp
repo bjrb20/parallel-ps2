@@ -3,7 +3,7 @@
 // The call-site migration from the C++ emitter API to the C89 macro API can
 // only be trusted if each converted file provably emits the same bytes. JIT
 // emission for a fixed content trace is deterministic, and every code cache
-// lives at a fixed offset inside the code arena (HostMemoryMap), so hashing
+// lives at a fixed offset inside the code arena (HOSTMEM_ in Memory.h), so hashing
 // each region after a fixed number of frames gives a per-cache fingerprint:
 // run the same trace on two builds, and any divergence in emitted code --
 // including patched displacements, since this hashes final bytes rather than
@@ -42,18 +42,18 @@ namespace
 		u32 size;
 	};
 
-	// Offsets and sizes per HostMemoryMap and the Assign() calls in the
+	// Offsets and sizes per the HOSTMEM_ map and the Assign() calls in the
 	// respective recompilers. Sizes are the reserve sizes, not high-water
 	// marks: unwritten arena pages read as zero, so hashing the full
 	// reserve is deterministic and needs no per-cache cursor plumbing.
 	const JitRegion s_regions[] = {
-		{"EErec", HostMemoryMap::EErecOffset, 64 * _1mb},
-		{"IOPrec", HostMemoryMap::IOPrecOffset, 32 * _1mb},
-		{"VIF0rec", HostMemoryMap::VIF0recOffset, 8 * _1mb},
-		{"VIF1rec", HostMemoryMap::VIF1recOffset, 8 * _1mb},
-		{"mVU0rec", HostMemoryMap::mVU0recOffset, 64 * _1mb},
-		{"mVU1rec", HostMemoryMap::mVU1recOffset, 64 * _1mb},
-		{"VIFUnpackRec", HostMemoryMap::VIFUnpackRecOffset, _1mb},
+		{"EErec", HOSTMEM_EEREC_OFFSET, 64 * _1mb},
+		{"IOPrec", HOSTMEM_IOPREC_OFFSET, 32 * _1mb},
+		{"VIF0rec", HOSTMEM_VIF0REC_OFFSET, 8 * _1mb},
+		{"VIF1rec", HOSTMEM_VIF1REC_OFFSET, 8 * _1mb},
+		{"mVU0rec", HOSTMEM_MVU0REC_OFFSET, 64 * _1mb},
+		{"mVU1rec", HOSTMEM_MVU1REC_OFFSET, 64 * _1mb},
+		{"VIFUnpackRec", HOSTMEM_VIFUNPACKREC_OFFSET, _1mb},
 	};
 } // namespace
 
@@ -66,7 +66,7 @@ JITHASH_EXPORT void pcsx2_jithash_dump(void)
 	if (!env || env[0] == '0')
 		return;
 
-	const u8* base = GetVmMemory().CodeMemory()->GetBase();
+	const u8* base = GetVmMemory()->code.baseptr;
 	if (!base)
 		return;
 

@@ -187,7 +187,7 @@
     <ClCompile Include="GS\Renderers\SW\GSDrawScanline.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSDrawScanlineCodeGenerator.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSDrawScanlineCodeGenerator.all.cpp" />
-    <ClCompile Include="GS\Renderers\Common\GSFunctionMap.cpp" />
+    <ClCompile Include="GS\Renderers\Common\GSCodeReserve.c" />
     <ClCompile Include="GS\Renderers\HW\GSHwHack.cpp" />
     <ClCompile Include="GS\GSLocalMemory.cpp" />
     <ClCompile Include="GS\GSLocalMemoryMultiISA.cpp" />
@@ -213,7 +213,7 @@
     <ClCompile Include="GS\GSXXH.cpp" />
     <ClCompile Include="GS\MultiISA.cpp" />
     <ClCompile Include="USB\shared\ringbuffer.cpp" />
-    <ClCompile Include="VirtualMemory.cpp" />
+    <ClCompile Include="VirtualMemory.c" />
     <ClCompile Include="VMManager.cpp" />
     <ClCompile Include="Pcsx2Config.cpp" />
     <ClCompile Include="SaveState.cpp" />
@@ -225,7 +225,7 @@
     <ClCompile Include="FiFo.cpp" />
     <ClCompile Include="Hw.cpp" />
     <ClCompile Include="Cache.cpp" />
-    <ClCompile Include="Memory.cpp" />
+    <ClCompile Include="Memory.c" />
     <ClCompile Include="x86\iR5900Analysis.cpp" />
     <ClCompile Include="x86\ix86-32\recVTLB.cpp" />
     <ClCompile Include="vtlb.cpp" />

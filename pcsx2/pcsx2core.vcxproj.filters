@@ -335,7 +335,7 @@
     <ClCompile Include="Cache.cpp">
       <Filter>System\Ps2\EmotionEngine\Memory</Filter>
     </ClCompile>
-    <ClCompile Include="Memory.cpp">
+    <ClCompile Include="Memory.c">
       <Filter>System\Ps2\EmotionEngine\Memory</Filter>
     </ClCompile>
     <ClCompile Include="x86\ix86-32\recVTLB.cpp">
@@ -884,7 +884,7 @@
     <ClCompile Include="GS\Renderers\Common\GSVertexTraceFMM.cpp">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
     </ClCompile>
-    <ClCompile Include="GS\Renderers\Common\GSFunctionMap.cpp">
+    <ClCompile Include="GS\Renderers\Common\GSCodeReserve.c">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
     </ClCompile>
     <ClCompile Include="GS\Renderers\DX11\D3D.cpp">
@@ -941,7 +941,7 @@
     <ClCompile Include="SPU2\Dma.cpp">
       <Filter>System\Ps2\SPU2</Filter>
     </ClCompile>
-    <ClCompile Include="VirtualMemory.cpp">
+    <ClCompile Include="VirtualMemory.c">
       <Filter>System</Filter>
     </ClCompile>
   </ItemGroup>

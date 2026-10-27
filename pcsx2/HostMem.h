@@ -22,14 +22,25 @@
 
 #include <stdio.h>
 #include <memmap.h>
+#include <retro_inline.h>
 #include "common/General.h"
 
 #if defined(_WIN32)
-/* RedtapeWindows.h, not <windows.h>: it sets NOMINMAX and
- * WIN32_LEAN_AND_MEAN first, and without them the max macro breaks
- * every std::numeric_limits<>::max() in a translation unit that
- * includes this one. */
+/* For C++, RedtapeWindows.h rather than <windows.h>: it sets NOMINMAX and
+ * WIN32_LEAN_AND_MEAN first, and without them the max macro breaks every
+ * std::numeric_limits<>::max() in a translation unit that includes this
+ * one. It is C++ itself, so C takes the same two settings directly. */
+#ifdef __cplusplus
 #include "common/RedtapeWindows.h"
+#else
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 #else
 #include <unistd.h>
 #endif
@@ -38,7 +49,7 @@
 #define MAP_JIT 0
 #endif
 
-static inline int host_prot(const PageProtectionMode& m)
+static INLINE int host_prot(PageProtectionMode m)
 {
 	int ret = 0;
 	if (m.m_read)
@@ -54,7 +65,7 @@ static inline int host_prot(const PageProtectionMode& m)
 
 /* Anonymous private memory, committed, at a hint. NULL if the mode has
  * neither read nor write, or if a hint was given and not honoured. */
-static inline void* host_mmap(void* hint, size_t size, const PageProtectionMode& m)
+static INLINE void* host_mmap(void* hint, size_t size, PageProtectionMode m)
 {
 	void* p;
 	if (!m.m_read && !m.m_write)
@@ -98,7 +109,7 @@ static inline void* host_mmap(void* hint, size_t size, const PageProtectionMode&
 #endif
 }
 
-static inline void host_munmap(void* p, size_t size)
+static INLINE void host_munmap(void* p, size_t size)
 {
 	if (!p)
 		return;
@@ -111,7 +122,7 @@ static inline void host_munmap(void* p, size_t size)
 
 /* A shared-memory name unique to this process. FreeBSD's shm_open needs
  * an absolute path; the others take a bare name. */
-static inline void host_shm_name(char* buf, size_t len, const char* prefix)
+static INLINE void host_shm_name(char* buf, size_t len, const char* prefix)
 {
 #if defined(_WIN32)
 	const unsigned pid = (unsigned)GetCurrentProcessId();

@@ -305,15 +305,15 @@ static __fi void _vifCode_MPG(int idx, u32 addr, const u32* data, int size)
 	{
 		if ((static_cast<u64>(addr) + static_cast<u64>(size) * 4) > vuMemSize)
 		{
-			vu1Thread.WriteMicroMem(addr, (u8*)data, vuMemSize - addr);
+			mtvu_write_micro_mem(addr, (u8*)data, vuMemSize - addr);
 			size -= (vuMemSize - addr) / 4;
 			data += (vuMemSize - addr) / 4;
-			vu1Thread.WriteMicroMem(0, (u8*)data, size * 4);
+			mtvu_write_micro_mem(0, (u8*)data, size * 4);
 			vifX.tag.addr = size * 4;
 		}
 		else
 		{
-			vu1Thread.WriteMicroMem(addr, (u8*)data, size * 4);
+			mtvu_write_micro_mem(addr, (u8*)data, size * 4);
 			vifX.tag.addr += size * 4;
 		}
 		return;

@@ -16,6 +16,7 @@
 
 #include "R3000A.h"
 #include <memalign.h>
+#include "../common/Align.h"
 #include "Common.h"
 #include "ps2/pgif.h" // for PSX kernel TTY in iopMemWrite32
 #include "SPU2/spu2.h"
@@ -32,38 +33,34 @@ IopVM_MemoryAllocMess* iopMem = NULL;
 
 alignas(__pagealignsize) u8 iopHw[Ps2MemSize::IopHardware];
 
-// --------------------------------------------------------------------------------------
-//  iopMemoryReserve
-// --------------------------------------------------------------------------------------
-/* IOP Main Memory (2MB) */
-iopMemoryReserve::iopMemoryReserve() : _parent() { }
-iopMemoryReserve::~iopMemoryReserve() { Release(); }
+/* IOP main memory (2MB), in the main map. */
+#define IOP_MEMORY_RESERVE_SIZE pcsx2_page_align(sizeof(IopVM_MemoryAllocMess))
 
-void iopMemoryReserve::Assign(VirtualMemoryManagerPtr allocator)
+void iop_memory_assign(const VirtualMemoryManager* main_map)
 {
 	psxMemWLUT = (uptr*)memalign_alloc(16, 0x2000 * sizeof(uptr) * 2);
-	psxMemRLUT = psxMemWLUT + 0x2000; //(uptr*)memalign_alloc(16, 0x10000 * sizeof(uptr));
-
-	VtlbMemoryReserve::Assign(std::move(allocator), HostMemoryMap::IOPmemOffset, sizeof(*iopMem));
-	iopMem = reinterpret_cast<IopVM_MemoryAllocMess*>(GetPtr());
+	psxMemRLUT = psxMemWLUT + 0x2000;
+	iopMem     = (IopVM_MemoryAllocMess*)vmm_alloc(main_map, HOSTMEM_IOPMEM_OFFSET, IOP_MEMORY_RESERVE_SIZE);
 }
 
-void iopMemoryReserve::Release()
+void iop_memory_release(const VirtualMemoryManager* main_map)
 {
-	_parent::Release();
+	if (iopMem)
+		vmm_free(main_map, iopMem, IOP_MEMORY_RESERVE_SIZE);
 
 	memalign_free(psxMemWLUT);
 	psxMemWLUT = NULL;
-	psxMemRLUT = nullptr;
-	iopMem = nullptr;
+	psxMemRLUT = NULL;
+	iopMem     = NULL;
 }
 
 // Note!  Resetting the IOP's memory state is dependent on having *all* psx memory allocated,
 // which is performed by MemInit and PsxMemInit()
-void iopMemoryReserve::Reset()
+void iop_memory_reset(void)
 {
-	_parent::Reset();
+	int i;
 
+	memset(iopMem, 0, IOP_MEMORY_RESERVE_SIZE);
 	memset(psxMemWLUT, 0, 0x2000 * sizeof(uptr) * 2);	// clears both allocations, RLUT and WLUT
 
 	// Trick!  We're accessing RLUT here through WLUT, since it's the non-const pointer.
@@ -71,7 +68,7 @@ void iopMemoryReserve::Reset()
 
 	// Map IOP main memory, which is Read/Write, and mirrored three times
 	// at 0x0, 0x8000, and 0xa000:
-	for (int i=0; i<0x0080; i++)
+	for (i = 0; i < 0x0080; i++)
 	{
 		psxMemWLUT[i + 0x0000] = (uptr)&iopMem->Main[(i & 0x1f) << 16];
 
@@ -88,17 +85,17 @@ void iopMemoryReserve::Reset()
 	psxMemWLUT[0x1f80] = (uptr)iopHw;
 
 	// Read-only memory areas, so don't map WLUT for these...
-	for (int i = 0; i < 0x0040; i++)
+	for (i = 0; i < 0x0040; i++)
 	{
 		psxMemWLUT[i + 0x2000 + 0x1fc0] = (uptr)&eeMem->ROM[i << 16];
 	}
 
-	for (int i = 0; i < 0x0040; i++)
+	for (i = 0; i < 0x0040; i++)
 	{
 		psxMemWLUT[i + 0x2000 + 0x1e00] = (uptr)&eeMem->ROM1[i << 16];
 	}
 
-	for (int i = 0; i < 0x0008; i++)
+	for (i = 0; i < 0x0008; i++)
 	{
 		psxMemWLUT[i + 0x2000 + 0x1e40] = (uptr)&eeMem->ROM2[i << 16];
 	}

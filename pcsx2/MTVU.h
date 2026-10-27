@@ -105,20 +105,17 @@ public:
 	// the worker can sleep on published-but-unnotified unpack data.
 	void KickPending();
 
-	// Waits till MTVU is done processing
-	void WaitVU();
+	// Waits till MTVU is done processing, and queues writes to VU1 memory:
+	// mtvu_wait_vu and mtvu_write_* (VUmicro.h), C for Memory.c.
+	friend void mtvu_wait_vu(void);
+	friend void* mtvu_write_mem_begin(int data_mem, u32 addr, u32 size);
+	friend void mtvu_write_mem_commit(void);
 
 	void Get_MTVUChanges();
 
 	void ExecuteVU(u32 vu_addr, u32 vif_top, u32 vif_itop, u32 fbrst);
 
 	void VifUnpack(vifStruct& _vif, VIFregisters& _vifRegs, const u8* data, u32 size);
-
-	// Writes to VU's Micro Memory (size in bytes)
-	void WriteMicroMem(u32 vu_micro_addr, const void* data, u32 size);
-
-	// Writes to VU's Data Memory (size in bytes)
-	void WriteDataMem(u32 vu_data_addr, const void* data, u32 size);
 
 	void WriteVIRegs(REG_VI* viRegs);
 

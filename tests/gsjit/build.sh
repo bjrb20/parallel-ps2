@@ -20,7 +20,8 @@ OBJ="$DIR/.obj"
 rm -rf "$OBJ" && mkdir -p "$OBJ"
 "$CC" -std=c89 -pedantic -Wall -Wno-long-long $OPT -c "$DIR/main.c" -o "$OBJ/main.o"
 "$CC" -w $DEFS $OPT $INC -c "$LC/memmap/memmap.c" -o "$OBJ/memmap.o"
-"$CXX" -std=c++17 -w $DEFS $OPT $INC -o "$DIR/gsjit$EXE" "$DIR/glue.cpp" \
-	"$P/GS/Renderers/Common/GSFunctionMap.cpp" "$P/VirtualMemory.cpp" "$OBJ"/*.o $LIBS
+"$CC" -w $DEFS $OPT $INC -c "$P/VirtualMemory.c" -o "$OBJ/VirtualMemory.o"
+"$CC" -w $DEFS $OPT $INC -c "$P/GS/Renderers/Common/GSCodeReserve.c" -o "$OBJ/GSCodeReserve.o"
+"$CXX" -std=c++17 -w $DEFS $OPT $INC -o "$DIR/gsjit$EXE" "$DIR/glue.cpp" "$OBJ"/*.o $LIBS
 rm -rf "$OBJ"
 "$DIR/gsjit$EXE"

@@ -46,7 +46,7 @@ struct nVifStruct
 	// (templates are used for most or all VIF indexing)
 	u32                     idx;
 
-	RecompiledCodeReserve*  recReserve;
+	struct CodeReserve      recReserve;  // x86 dynarec; unused on arm64
 	u8*                     recWritePtr; // current write pos into the reserve
 	u8*                     recEndPtr;   // arm64 dynarec: end of the code region (overflow check)
 

@@ -41,8 +41,10 @@ static GSCodeGeneratorFunctionMap<FakeCG, u64, FakeFn> s_map;
 
 extern "C" void gsjit_assign(unsigned char* base, size_t size)
 {
-	GSCodeReserve::GetInstance().VirtualMemoryReserve::Assign(nullptr, base, size);
-	GSCodeReserve::GetInstance().Reset();
+	g_gs_code_reserve.reserve.baseptr   = base;
+	g_gs_code_reserve.reserve.size      = size;
+	g_gs_code_reserve.reserve.allocator = NULL;
+	gs_code_reserve_reset();
 }
 
 extern "C" const unsigned char* gsjit_get(unsigned long long key)
@@ -54,11 +56,11 @@ extern "C" const unsigned char* gsjit_get(unsigned long long key)
 extern "C" void gsjit_reset(void)
 {
 	s_map.Clear();
-	GSCodeReserve::GetInstance().Reset();
+	gs_code_reserve_reset();
 }
 
 extern "C" void gsjit_release(void)
 {
 	s_map.Clear();
-	GSCodeReserve::GetInstance().VirtualMemoryReserve::Assign(nullptr, nullptr, 0);
+	code_reserve_init(&g_gs_code_reserve.reserve);
 }

@@ -48,15 +48,15 @@ GSDrawScanline::GSDrawScanline()
 #endif
 {
 #ifdef ENABLE_JIT_RASTERIZER
-	GSCodeReserve::GetInstance().AllowModification();
-	GSCodeReserve::GetInstance().Reset();
+	code_reserve_allow_modification(&g_gs_code_reserve.reserve);
+	gs_code_reserve_reset();
 #endif
 }
 
 GSDrawScanline::~GSDrawScanline()
 {
 #ifdef ENABLE_JIT_RASTERIZER
-	GSCodeReserve::GetInstance().ForbidModification();
+	code_reserve_forbid_modification(&g_gs_code_reserve.reserve);
 #endif
 }
 
@@ -95,7 +95,7 @@ void GSDrawScanline::ResetCodeCache()
 #ifdef ENABLE_JIT_RASTERIZER
 	m_sp_map.Clear();
 	m_ds_map.Clear();
-	GSCodeReserve::GetInstance().Reset();
+	gs_code_reserve_reset();
 #endif
 }
 

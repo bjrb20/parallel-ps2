@@ -66,8 +66,8 @@ bool mtvuFreeze(SaveStateBase *s)
 		vu1Thread.Reset();
 		vu1Thread.WriteCol(vif1);
 		vu1Thread.WriteRow(vif1);
-		vu1Thread.WriteMicroMem(0, vuRegs[1].Micro, 0x4000);
-		vu1Thread.WriteDataMem(0, vuRegs[1].Mem, 0x4000);
+		mtvu_write_micro_mem(0, vuRegs[1].Micro, 0x4000);
+		mtvu_write_data_mem(0, vuRegs[1].Mem, 0x4000);
 		vu1Thread.WriteVIRegs(&vuRegs[1].VI[0]);
 		vu1Thread.WriteVFRegs(&vuRegs[1].VF[0]);
 	}
@@ -596,12 +596,12 @@ void Gif_MTVU_KickSema()
 	retro_asym_eventcount_notify(&vu1Thread.ecXGkick);
 }
 
-void VU_Thread::WaitVU()
+void mtvu_wait_vu(void)
 {
 	// C.80: WaitForEmpty trusts the sema state machine -- flush any deferred
 	// unpack notify first or it can pass with unprocessed work in the ring.
-	KickPending();
-	work_eventcount_wait_empty(&semaEvent);
+	vu1Thread.KickPending();
+	work_eventcount_wait_empty(&vu1Thread.semaEvent);
 }
 
 void VU_Thread::ExecuteVU(u32 vu_addr, u32 vif_top, u32 vif_itop, u32 fbrst)
@@ -642,26 +642,35 @@ void VU_Thread::VifUnpack(vifStruct& _vif, VIFregisters& _vifRegs, const u8* dat
 	s_kickPending = true; // C.80: published; notify deferred to a flush point
 }
 
-void VU_Thread::WriteMicroMem(u32 vu_micro_addr, const void* data, u32 size)
+void* mtvu_write_mem_begin(int data_mem, u32 addr, u32 size)
 {
-	ReserveSpace(3 + SIZE_U32(size));
-	Write(MTVU_VU_WRITE_MICRO);
-	Write(vu_micro_addr);
-	Write(size);
-	Write(data, size);
-	retro_atomic_store_release_int(&m_ato_write_pos, m_write_pos);
-	KickStart();
+	VU_Thread* t = &vu1Thread;
+	void* slot;
+	t->ReserveSpace(3 + SIZE_U32(size));
+	t->Write(data_mem ? MTVU_VU_WRITE_DATA : MTVU_VU_WRITE_MICRO);
+	t->Write(addr);
+	t->Write(size);
+	slot = t->GetWritePtr();
+	t->m_write_pos += SIZE_U32(size);
+	return slot;
 }
 
-void VU_Thread::WriteDataMem(u32 vu_data_addr, const void* data, u32 size)
+void mtvu_write_mem_commit(void)
 {
-	ReserveSpace(3 + SIZE_U32(size));
-	Write(MTVU_VU_WRITE_DATA);
-	Write(vu_data_addr);
-	Write(size);
-	Write(data, size);
-	retro_atomic_store_release_int(&m_ato_write_pos, m_write_pos);
-	KickStart();
+	retro_atomic_store_release_int(&vu1Thread.m_ato_write_pos, vu1Thread.m_write_pos);
+	vu1Thread.KickStart();
+}
+
+void mtvu_write_micro_mem(u32 vu_micro_addr, const void* data, u32 size)
+{
+	memcpy(mtvu_write_mem_begin(0, vu_micro_addr, size), data, size);
+	mtvu_write_mem_commit();
+}
+
+void mtvu_write_data_mem(u32 vu_data_addr, const void* data, u32 size)
+{
+	memcpy(mtvu_write_mem_begin(1, vu_data_addr, size), data, size);
+	mtvu_write_mem_commit();
 }
 
 void VU_Thread::WriteVIRegs(REG_VI* viRegs)

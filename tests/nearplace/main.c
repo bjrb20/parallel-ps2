@@ -231,6 +231,94 @@ static void lane_fuzz(void)
 	printf("fuzz: %u layouts with main and code placed\n", with_code);
 }
 
+/* The core's pair placement over the same layouts, the maps simulated
+ * against the layout's free space. */
+typedef struct sim
+{
+	const layout_t *l;
+	uintptr_t main_base;
+	uintptr_t code_base;
+	int main_mapped;
+} sim_t;
+
+static int sim_map_main(void *ctx, uintptr_t base)
+{
+	sim_t *m = (sim_t *)ctx;
+	if (!inside_gap(m->l, base, MAIN_SIZE))
+		return 0;
+	m->main_base   = base;
+	m->main_mapped = 1;
+	return 1;
+}
+
+static void sim_unmap_main(void *ctx)
+{
+	((sim_t *)ctx)->main_mapped = 0;
+}
+
+static int sim_map_code(void *ctx, uintptr_t base)
+{
+	sim_t *m = (sim_t *)ctx;
+	if (!inside_gap(m->l, base, CODE_SIZE))
+		return 0;
+	if (m->main_mapped && base < m->main_base + MAIN_SIZE && base + CODE_SIZE > m->main_base)
+		return 0;
+	m->code_base = base;
+	return 1;
+}
+
+static near_space_t space;
+
+static void lane_fuzz_pair(void)
+{
+	unsigned iter;
+	unsigned placed = 0;
+
+	for (iter = 0; iter < 20000; iter++)
+	{
+		layout_t l;
+		sim_t m;
+		near_pair_ops_t ops;
+		near_range_t image;
+		near_range_t hull;
+		near_range_t r;
+		uintptr_t ceiling = (uintptr_t)1 << (sizeof(uintptr_t) * 8 - 1);
+		unsigned i;
+
+		image.lo = (HI(0x7F00, 0) + (rng() % HI(1, 0))) & ~(uintptr_t)0xFFF;
+		image.hi = image.lo + 0x100000 + (rng() % 0x30000000);
+		make_layout(&l, &image);
+
+		space.count    = 0;
+		space.min_size = CODE_SIZE;
+		for (i = 0; i < l.count && space.count < NEAR_MAX_GAPS; i++)
+			if (l.gap[i].hi - l.gap[i].lo >= CODE_SIZE)
+				space.gap[space.count++] = l.gap[i];
+
+		m.l           = &l;
+		m.main_mapped = 0;
+		ops.map_main   = sim_map_main;
+		ops.unmap_main = sim_unmap_main;
+		ops.map_code   = sim_map_code;
+		ops.ctx        = &m;
+		if (!near_place_pair_in(&space, &image, MAIN_SIZE, ceiling, CODE_SIZE, RIP_LIMIT, RESERVE_ALIGN, &ops))
+			continue;
+		placed++;
+		CHECK(m.main_mapped, "placed without main");
+		CHECK((m.main_base & (RESERVE_ALIGN - 1)) == 0 && (m.code_base & (RESERVE_ALIGN - 1)) == 0,
+				"pair misaligned");
+		CHECK(m.main_base + MAIN_SIZE <= ceiling, "main above the ceiling");
+		hull = image;
+		r.lo = m.main_base;
+		r.hi = m.main_base + MAIN_SIZE;
+		near_hull(&hull, &r);
+		CHECK(hull.hi - hull.lo <= RIP_LIMIT - CODE_SIZE, "main leaves no room for code");
+		CHECK(hull_span(&hull, m.code_base, CODE_SIZE) <= RIP_LIMIT, "code out of reach of image and main");
+	}
+	CHECK(placed > 1000, "pair fuzz placed too few to mean anything");
+	printf("fuzz pair: %u layouts placed by the core's placement\n", placed);
+}
+
 /* One free hole near the image, off any fixed stride from it: the only
  * candidate is that hole. */
 static void lane_one_hole(void)
@@ -353,43 +441,72 @@ static void lane_live_extent(near_range_t *image)
 	big_bss[data_global] = 1;
 }
 
+/* The core's placement, with test reservations in place of the maps. */
+typedef struct pair_ctx
+{
+	uintptr_t main_base;
+	uintptr_t code_base;
+} pair_ctx_t;
+
+static int pair_map_main(void *ctx, uintptr_t base)
+{
+	if (!reserve_at(base, MAIN_SIZE))
+		return 0;
+	((pair_ctx_t *)ctx)->main_base = base;
+	return 1;
+}
+
+static void pair_unmap_main(void *ctx)
+{
+	release_at(((pair_ctx_t *)ctx)->main_base, MAIN_SIZE);
+	((pair_ctx_t *)ctx)->main_base = 0;
+}
+
+static int pair_map_code(void *ctx, uintptr_t base)
+{
+	if (!reserve_at(base, CODE_SIZE))
+		return 0;
+	((pair_ctx_t *)ctx)->code_base = base;
+	return 1;
+}
+
+/* Places the pair; checks the hull of image, main and code is within reach
+ * and that main stays under the ceiling. */
+static int place_pair_checked(const near_range_t *image, pair_ctx_t *pc)
+{
+	near_pair_ops_t ops;
+	near_range_t hull;
+	near_range_t r;
+	uintptr_t ceiling = (uintptr_t)1 << (sizeof(uintptr_t) * 8 - 1);
+
+	pc->main_base = 0;
+	pc->code_base = 0;
+	ops.map_main   = pair_map_main;
+	ops.unmap_main = pair_unmap_main;
+	ops.map_code   = pair_map_code;
+	ops.ctx        = pc;
+	if (!near_place_pair(&space, image, MAIN_SIZE, ceiling, CODE_SIZE, RIP_LIMIT, RESERVE_ALIGN, &ops))
+		return 0;
+	hull  = *image;
+	r.lo  = pc->main_base;
+	r.hi  = pc->main_base + MAIN_SIZE;
+	near_hull(&hull, &r);
+	CHECK(pc->main_base + MAIN_SIZE <= ceiling, "main above the ceiling");
+	CHECK(hull.hi - hull.lo <= RIP_LIMIT - CODE_SIZE, "main leaves no room for code");
+	CHECK(hull_span(&hull, pc->code_base, CODE_SIZE) <= RIP_LIMIT, "code out of reach of image and main");
+	CHECK(pc->code_base + CODE_SIZE <= pc->main_base || pc->code_base >= pc->main_base + MAIN_SIZE,
+			"code overlaps main");
+	return 1;
+}
+
 static void lane_live_pair(const near_range_t *image)
 {
-	near_search_t m;
-	near_search_t c;
-	near_range_t target;
-	near_range_t main_r;
-	uintptr_t ceiling = (uintptr_t)1 << (sizeof(uintptr_t) * 8 - 1);
-	unsigned i;
-	int placed = 0;
-
-	CHECK(near_search_init(&m, image, MAIN_SIZE, RIP_LIMIT - CODE_SIZE, RESERVE_ALIGN, ceiling), "main window refused");
-	near_search_scan(&m);
-	for (i = 0; i < m.count && !placed; i++)
-	{
-		if (!reserve_at(m.base[i], MAIN_SIZE))
-			continue;
-		main_r.lo = m.base[i];
-		main_r.hi = m.base[i] + MAIN_SIZE;
-		target    = *image;
-		near_hull(&target, &main_r);
-		if (!near_place_room(&target, CODE_SIZE, RIP_LIMIT, RESERVE_ALIGN))
-		{
-			release_at(m.base[i], MAIN_SIZE);
-			continue;
-		}
-		CHECK(near_search_init(&c, &target, CODE_SIZE, RIP_LIMIT, RESERVE_ALIGN, 0), "code window refused");
-		near_search_scan(&c);
-		CHECK(c.count > 0, "room reported but no code candidate");
-		if (c.count && reserve_at(c.base[0], CODE_SIZE))
-		{
-			CHECK(hull_span(&target, c.base[0], CODE_SIZE) <= RIP_LIMIT, "live code out of reach");
-			release_at(c.base[0], CODE_SIZE);
-			placed = 1;
-		}
-		release_at(m.base[i], MAIN_SIZE);
-	}
-	CHECK(placed, "no live main + code placement");
+	pair_ctx_t pc;
+	CHECK(place_pair_checked(image, &pc), "no live main + code placement");
+	if (pc.code_base)
+		release_at(pc.code_base, CODE_SIZE);
+	if (pc.main_base)
+		release_at(pc.main_base, MAIN_SIZE);
 }
 
 #ifndef NEAR_FORCE_STEPPED
@@ -448,22 +565,25 @@ typedef struct crowd
 	unsigned held;
 } crowd_t;
 
-/* A hole half a stride off the grid a fixed-stride probe would step through
- * outward from the image's edges. */
+#define HOLE_SIZE (MAIN_SIZE + CODE_SIZE)
+
+/* A hole for both maps, half a stride off the grid a fixed-stride probe would
+ * step through outward from the image's edges, and clear of the few bases
+ * right outside the image the quick pass tries. */
 static void find_hole(uintptr_t lo, uintptr_t hi, void *ctx)
 {
 	crowd_t *c = (crowd_t *)ctx;
 	uintptr_t h;
-	if (c->hole || hi - lo < CODE_SIZE + 2 * RESERVE_ALIGN)
+	if (c->hole || hi - lo < HOLE_SIZE + 2 * RESERVE_ALIGN)
 		return;
 	h = (lo + RESERVE_ALIGN - 1) & ~(RESERVE_ALIGN - 1);
 	if (h >= c->up)
 		h += (STRIDE / 2 - (h - c->up) % STRIDE + STRIDE) % STRIDE;
 	else if (h <= c->down)
 		h += ((c->down - h) % STRIDE + STRIDE / 2) % STRIDE;
-	if (h > c->down && h < c->up)
+	if (h > c->down - 2 * STRIDE - HOLE_SIZE && h < c->up + 2 * STRIDE)
 		return;
-	if (h >= c->win_lo && h <= c->win_hi && h + CODE_SIZE <= hi)
+	if (h >= c->win_lo && h <= c->win_hi && h + HOLE_SIZE <= hi)
 		c->hole = h;
 }
 
@@ -484,7 +604,7 @@ static void fill_gap(uintptr_t lo, uintptr_t hi, void *ctx)
 	if (c->hole >= lo && c->hole < hi)
 	{
 		hold(c, lo, c->hole);
-		hold(c, c->hole + CODE_SIZE, hi);
+		hold(c, c->hole + HOLE_SIZE, hi);
 	}
 	else
 		hold(c, lo, hi);
@@ -495,34 +615,48 @@ static crowd_t crowd;
 static void lane_live_crowded(const near_range_t *image)
 {
 	near_search_t s;
+	pair_ctx_t pc;
 	unsigned i;
+	int placed;
 
-	CHECK(near_search_init(&s, image, CODE_SIZE, RIP_LIMIT, RESERVE_ALIGN, 0), "window refused");
-	crowd.down   = (image->lo - CODE_SIZE) & ~(RESERVE_ALIGN - 1);
+	CHECK(near_search_init(&s, image, HOLE_SIZE, RIP_LIMIT, RESERVE_ALIGN, 0), "window refused");
+	crowd.down   = (image->lo - MAIN_SIZE) & ~(RESERVE_ALIGN - 1);
 	crowd.up     = (image->hi + RESERVE_ALIGN - 1) & ~(RESERVE_ALIGN - 1);
 	crowd.win_lo = s.window.lo;
 	crowd.win_hi = s.window.hi;
 	crowd.hole   = 0;
 	crowd.held   = 0;
-	each_gap(s.window.lo, s.window.hi + CODE_SIZE, find_hole, &crowd);
+	each_gap(s.window.lo, s.window.hi + HOLE_SIZE, find_hole, &crowd);
 	if (!crowd.hole)
 	{
 		printf("crowded: SKIP (no free range in reach to cut the hole from)\n");
 		return;
 	}
 	each_gap(s.window.lo > 0x10000000 ? s.window.lo - 0x10000000 : 0x10000,
-			s.window.hi + CODE_SIZE + 0x10000000, fill_gap, &crowd);
+			s.window.hi + HOLE_SIZE + 0x10000000, fill_gap, &crowd);
 	/* Reserved only now: the enumeration reads the map these change. */
 	for (i = 0; i < crowd.held; i++)
 		if (!reserve_at(crowd.held_lo[i], crowd.held_len[i]))
 			crowd.held_len[i] = 0;
 
-	CHECK(near_search_init(&s, image, CODE_SIZE, RIP_LIMIT, RESERVE_ALIGN, 0), "window refused");
-	near_search_scan(&s);
+	/* The map finds the hole exactly... */
+	CHECK(near_space_read(&space, s.window.lo, s.window.hi + HOLE_SIZE, CODE_SIZE), "address space unreadable");
+	CHECK(near_search_init(&s, image, HOLE_SIZE, RIP_LIMIT, RESERVE_ALIGN, 0), "window refused");
+	near_search_space(&s, &space, NULL);
 	CHECK(s.count >= 1 && s.base[0] == crowd.hole, "the only hole in reach was not found");
-	CHECK(near_place_room(image, CODE_SIZE, RIP_LIMIT, RESERVE_ALIGN), "room not found in the only hole");
-	printf("crowded: %u ranges held, hole %s\n", crowd.held,
-			s.count && s.base[0] == crowd.hole ? "found" : "MISSED");
+
+	/* ...and the core's placement puts both maps in it. */
+	placed = place_pair_checked(image, &pc);
+	CHECK(placed, "no placement in the only hole");
+	CHECK(!placed || (pc.main_base >= crowd.hole && pc.main_base + MAIN_SIZE <= crowd.hole + HOLE_SIZE
+			&& pc.code_base >= crowd.hole && pc.code_base + CODE_SIZE <= crowd.hole + HOLE_SIZE),
+			"placement outside the only hole");
+	printf("crowded: %u ranges held, hole %s, pair %s\n", crowd.held,
+			s.count && s.base[0] == crowd.hole ? "found" : "MISSED", placed ? "placed" : "NOT PLACED");
+	if (pc.code_base)
+		release_at(pc.code_base, CODE_SIZE);
+	if (pc.main_base)
+		release_at(pc.main_base, MAIN_SIZE);
 
 	for (i = 0; i < crowd.held; i++)
 		if (crowd.held_len[i])
@@ -535,6 +669,7 @@ int main(void)
 	near_range_t image;
 
 	lane_fuzz();
+	lane_fuzz_pair();
 	lane_one_hole();
 	lane_best_k();
 	lane_edges();

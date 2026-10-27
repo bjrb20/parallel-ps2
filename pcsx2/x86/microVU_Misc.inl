@@ -294,7 +294,7 @@ static inline u32 branchAddr(const mV)
 	return ((((iPC + 2) + (_Imm11_ * 2)) & mVU->progMemMask) * 4);
 }
 
-static void mVUwaitMTVU(void) { vu1Thread.WaitVU(); }
+static void mVUwaitMTVU(void) { mtvu_wait_vu(); }
 
 /* Transforms the Address in gprReg to valid VU0/VU1 Address */
 __fi void mVUaddrFix(mV, int gprReg)

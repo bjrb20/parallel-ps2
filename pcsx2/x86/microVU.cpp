@@ -37,8 +37,8 @@ static void mVUreserveCache(microVU* mVU)
 	mVU->cache_reserve = (struct CodeReserve*)malloc(sizeof(struct CodeReserve));
 	code_reserve_init(mVU->cache_reserve);
 
-	const size_t alloc_offset = mVU->index ? HostMemoryMap::mVU0recOffset : HostMemoryMap::mVU1recOffset;
-	code_reserve_assign(mVU->cache_reserve, GetVmMemory().CodeMemory().get(), alloc_offset, mVU->cacheSize * _1mb);
+	const size_t alloc_offset = mVU->index ? HOSTMEM_MVU0REC_OFFSET : HOSTMEM_MVU1REC_OFFSET;
+	code_reserve_assign(mVU->cache_reserve, &GetVmMemory()->code, alloc_offset, mVU->cacheSize * _1mb);
 	mVU->cache = mVU->cache_reserve->baseptr;
 }
 
@@ -419,7 +419,7 @@ static void rec_vu0_shutdown(void)
 static void rec_vu1_shutdown(void)
 {
 	if (vu1Thread.IsOpen())
-		vu1Thread.WaitVU();
+		mtvu_wait_vu();
 	mVUclose(&microVU1);
 }
 
@@ -430,7 +430,7 @@ static void rec_vu0_reset(void)
 
 static void rec_vu1_reset(void)
 {
-	vu1Thread.WaitVU();
+	mtvu_wait_vu();
 	vu1Thread.Get_MTVUChanges();
 	mVUreset(&microVU1, 1);
 }
@@ -498,7 +498,7 @@ static void rec_vu1_resume_xgkick(void)
 bool vuJITFreeze(SaveStateBase *s)
 {
 	if (SaveState_IsSaving(s))
-		vu1Thread.WaitVU();
+		mtvu_wait_vu();
 
 	SaveState_Freeze(s, microVU0.prog.lpState);
 	SaveState_Freeze(s, microVU1.prog.lpState);

@@ -432,3 +432,43 @@ template bool dmacWrite32<0x0c>( u32 mem, mem32_t& value );
 template bool dmacWrite32<0x0d>( u32 mem, mem32_t& value );
 template bool dmacWrite32<0x0e>( u32 mem, mem32_t& value );
 template bool dmacWrite32<0x0f>( u32 mem, mem32_t& value );
+
+/* The vtlb registration of the EE hardware register handlers (Hw.h). Not in
+ * Hw.cpp: taking the page 0xf handlers' addresses there stops GCC inlining
+ * hwWrite32<0x0f> into the byte and halfword writes of that page. */
+#define hwHandlerTmpl(page) \
+	hwRead8<page>,	hwRead16<page>,	hwRead32<page>,	hwRead64<page>,	hwRead128<page>, \
+	hwWrite8<page>,	hwWrite16<page>,hwWrite32<page>,hwWrite64<page>,hwWrite128<page>
+
+u32 hwRegisterPageHandlers(u32 page)
+{
+	switch (page)
+	{
+		case 0x0: return vtlb_RegisterHandler(hwHandlerTmpl(0x00));
+		case 0x1: return vtlb_RegisterHandler(hwHandlerTmpl(0x01));
+		case 0x2: return vtlb_RegisterHandler(hwHandlerTmpl(0x02));
+		case 0x3: return vtlb_RegisterHandler(hwHandlerTmpl(0x03));
+		case 0x4: return vtlb_RegisterHandler(hwHandlerTmpl(0x04));
+		case 0x5: return vtlb_RegisterHandler(hwHandlerTmpl(0x05));
+		case 0x6: return vtlb_RegisterHandler(hwHandlerTmpl(0x06));
+		case 0x7: return vtlb_RegisterHandler(hwHandlerTmpl(0x07));
+		case 0x8: return vtlb_RegisterHandler(hwHandlerTmpl(0x08));
+		case 0x9: return vtlb_RegisterHandler(hwHandlerTmpl(0x09));
+		case 0xa: return vtlb_RegisterHandler(hwHandlerTmpl(0x0a));
+		case 0xb: return vtlb_RegisterHandler(hwHandlerTmpl(0x0b));
+		case 0xc: return vtlb_RegisterHandler(hwHandlerTmpl(0x0c));
+		case 0xd: return vtlb_RegisterHandler(hwHandlerTmpl(0x0d));
+		case 0xe: return vtlb_RegisterHandler(hwHandlerTmpl(0x0e));
+		default:  return vtlb_NewHandler();
+	}
+}
+
+void hwAssignPage0FHandlers(u32 handler, bool intc_stat_hack)
+{
+	vtlb_ReassignHandler(handler,
+		hwRead8<0x0f>,
+		intc_stat_hack ? hwRead16_page_0F_INTC_HACK : hwRead16<0x0f>,
+		intc_stat_hack ? hwRead32_page_0F_INTC_HACK : hwRead32<0x0f>,
+		hwRead64<0x0f>, hwRead128<0x0f>,
+		hwWrite8<0x0f>, hwWrite16<0x0f>, hwWrite32<0x0f>, hwWrite64<0x0f>, hwWrite128<0x0f>);
+}

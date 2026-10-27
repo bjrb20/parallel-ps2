@@ -67,6 +67,10 @@ static __fi void r128_store_unaligned(void* ptr, r128 val)
 	_mm_storeu_si128((r128*)(ptr), val);
 }
 
+/* Whether the 16 bytes at ptr (any alignment) equal val. */
+#define r128_equals_unaligned(ptr, val) \
+	(_mm_movemask_epi8(_mm_cmpeq_epi8(_mm_loadu_si128((const __m128i*)(ptr)), (val))) == 0xffff)
+
 #define r128_zero() _mm_setzero_si128()
 /* Expects that r64 came from r64-handling code, and not from a recompiler or something */
 #define r128_from_u64_dup(val) _mm_set1_epi64x((val))
@@ -115,6 +119,10 @@ static __fi void r128_store_unaligned(void* ptr, r128 value)
 {
 	vst1q_u32((uint32_t*)(ptr), value);
 }
+
+/* Whether the 16 bytes at ptr (any alignment) equal val. */
+#define r128_equals_unaligned(ptr, val) \
+	(vminvq_u32(vceqq_u32(vld1q_u32((const uint32_t*)(ptr)), (val))) == 0xffffffffu)
 
 #define r128_zero() vmovq_n_u32(0)
 

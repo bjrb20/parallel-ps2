@@ -44,15 +44,19 @@ typedef  void TAKES_R128 vtlbMemW128FP(u32 addr,r128 data);
 
 typedef u32 vtlbHandler;
 
-extern bool vtlb_Core_Alloc();
-extern void vtlb_Core_Free();
-extern void vtlb_Alloc_Ppmap();
-extern void vtlb_Init();
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+extern bool vtlb_Core_Alloc(void);
+extern void vtlb_Core_Free(void);
+extern void vtlb_Alloc_Ppmap(void);
+extern void vtlb_Init(void);
 extern void vtlb_Shutdown(void);
 extern void vtlb_Reset(void);
 extern void vtlb_ResetFastmem(void);
 
-extern vtlbHandler vtlb_NewHandler();
+extern vtlbHandler vtlb_NewHandler(void);
 
 extern vtlbHandler vtlb_RegisterHandler(
 	vtlbMemR8FP* r8,vtlbMemR16FP* r16,vtlbMemR32FP* r32,vtlbMemR64FP* r64,vtlbMemR128FP* r128,
@@ -99,10 +103,12 @@ extern void vtlb_memWrite128(u32 mem, const r128* value);
 extern void TAKES_R128 vtlb_memWrite128(u32 mem, r128 value);
 #endif
 
-/* The recompiler entry points and the reserve classes. Both are C++: the
- * dynarec declarations carry default arguments and an alias template, and
- * the reserves derive from VirtualMemoryReserve. Nothing in C calls either.
- */
+#ifdef __cplusplus
+}
+#endif
+
+/* The recompiler entry points are C++: the dynarec declarations carry default
+ * arguments and an alias template. */
 #ifdef __cplusplus
 
 // "Safe" variants of vtlb, designed for external tools.
@@ -116,70 +122,6 @@ extern void vtlb_DynGenWrite(u32 sz, int xmm, int addr_reg, int value_reg);
 extern void vtlb_DynGenWrite_Const(u32 bits, int xmm, u32 addr_const, int value_reg);
 
 extern void vtlb_DynGenDispatchers(void);
-
-// --------------------------------------------------------------------------------------
-//  VtlbMemoryReserve
-// --------------------------------------------------------------------------------------
-class VtlbMemoryReserve : public VirtualMemoryReserve
-{
-public:
-	VtlbMemoryReserve();
-
-	void Assign(VirtualMemoryManagerPtr allocator, size_t offset, size_t size);
-
-	virtual void Reset();
-};
-
-// --------------------------------------------------------------------------------------
-//  eeMemoryReserve
-// --------------------------------------------------------------------------------------
-class eeMemoryReserve : public VtlbMemoryReserve
-{
-	typedef VtlbMemoryReserve _parent;
-
-public:
-	eeMemoryReserve();
-	~eeMemoryReserve();
-
-	void Assign(VirtualMemoryManagerPtr allocator);
-	void Release();
-
-	void Reset() override;
-};
-
-// --------------------------------------------------------------------------------------
-//  iopMemoryReserve
-// --------------------------------------------------------------------------------------
-class iopMemoryReserve : public VtlbMemoryReserve
-{
-	typedef VtlbMemoryReserve _parent;
-
-public:
-	iopMemoryReserve();
-	~iopMemoryReserve();
-
-	void Assign(VirtualMemoryManagerPtr allocator);
-	void Release();
-
-	void Reset() override;
-};
-
-// --------------------------------------------------------------------------------------
-//  vuMemoryReserve
-// --------------------------------------------------------------------------------------
-class vuMemoryReserve : public VtlbMemoryReserve
-{
-	typedef VtlbMemoryReserve _parent;
-
-public:
-	vuMemoryReserve();
-	~vuMemoryReserve();
-
-	void Assign(VirtualMemoryManagerPtr allocator);
-	void Release();
-
-	void Reset() override;
-};
 
 #endif /* __cplusplus */
 

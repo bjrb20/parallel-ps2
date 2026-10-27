@@ -20,6 +20,7 @@
 #include <retro_atomic.h>
 #include <features/features_cpu.h>
 #include "VMManager.h"
+#include "GS/Renderers/Common/GSCodeReserve.h"
 
 #include <sstream>
 
@@ -129,7 +130,7 @@ namespace VMManager
 	static void SetEmuThreadAffinities();
 } // namespace VMManager
 
-static std::unique_ptr<SysMainMemory> s_vm_memory;
+static SysMainMemory s_vm_memory;
 
 static retro_atomic_int_t s_state = RETRO_ATOMIC_INT_INITIALIZER((int)VMState::Shutdown);
 static bool s_cpu_implementation_changed = false;
@@ -238,11 +239,11 @@ void VMManager::Internal::CPUThreadInitialize(void)
 	SPU2_Initialize();
 	USBinit();
 
-	s_vm_memory = std::make_unique<SysMainMemory>();
+	sys_memory_init(&s_vm_memory);
 
 	InitializeCPUProviders();
 
-	s_vm_memory->Allocate();
+	sys_memory_allocate(&s_vm_memory);
 }
 
 void VMManager::Internal::CPUThreadShutdown(void)
@@ -253,7 +254,7 @@ void VMManager::Internal::CPUThreadShutdown(void)
 	s_no_interlacing_cheats_loaded = false;
 
 	ShutdownCPUProviders();
-	s_vm_memory.reset();
+	sys_memory_destroy(&s_vm_memory);
 
 	/* Nothing consults the game database without a VM, and the next
 	 * load re-reads it lazily. */
@@ -277,9 +278,9 @@ void VMManager::Internal::CPUThreadShutdown(void)
 	GSshutdown();
 }
 
-SysMainMemory& GetVmMemory()
+SysMainMemory* GetVmMemory(void)
 {
-	return *s_vm_memory;
+	return &s_vm_memory;
 }
 
 /* The frontend's content name; the first memory card is named after it. */
@@ -724,7 +725,7 @@ bool VMManager::Initialize(VMBootParameters boot_params)
 	UpdateCPUImplementations();
 	Internal::ClearCPUExecutionCaches();
 	FPControlRegister::SetCurrent(EmuConfig.Cpu.FPUFPCR);
-	memBindConditionalHandlers();
+	memBindConditionalHandlers(EmuConfig.Speedhacks.IntcStat, THREAD_VU1);
 
 	ForgetLoadedPatches();
 	UpdateVSyncRate(true);
@@ -753,7 +754,7 @@ void VMManager::Shutdown()
 
 	// sync everything
 	if (THREAD_VU1)
-		vu1Thread.WaitVU();
+		mtvu_wait_vu();
 	MTGS::WaitGS(false);
 
 	{
@@ -825,7 +826,7 @@ void VMManager::Reset()
 		return;
 	}
 
-	vu1Thread.WaitVU();
+	mtvu_wait_vu();
 	vu1Thread.Reset();
 	MTGS::WaitGS(false);
 
@@ -836,7 +837,7 @@ void VMManager::Reset()
 	s_active_no_interlacing_patches = 0;
 
 	Internal::ClearCPUExecutionCaches();
-	memBindConditionalHandlers();
+	memBindConditionalHandlers(EmuConfig.Speedhacks.IntcStat, THREAD_VU1);
 	UpdateVSyncRate(true);
 
 	cpuReset();
@@ -913,14 +914,14 @@ void VMManager::InitializeCPUProviders()
 	dVifReserve(1);
 #endif
 
-	GSCodeReserve::GetInstance().Assign(GetVmMemory().CodeMemory());
+	gs_code_reserve_assign(&s_vm_memory.code);
 
 	VifUnpackSSE_Init(); // on arm64 this generates the NEON nVifUpk kernels (C.19)
 }
 
 void VMManager::ShutdownCPUProviders()
 {
-	GSCodeReserve::GetInstance().Release();
+	gs_code_reserve_release();
 
 #ifndef ARCH_ARM64
 	dVifRelease(1);
@@ -1101,7 +1102,7 @@ void VMManager::CheckForCPUConfigChanges(const Pcsx2Config& old_config)
 	log_cb(RETRO_LOG_INFO, "Updating CPU configuration...\n");
 	FPControlRegister::SetCurrent(EmuConfig.Cpu.FPUFPCR);
 	Internal::ClearCPUExecutionCaches();
-	memBindConditionalHandlers();
+	memBindConditionalHandlers(EmuConfig.Speedhacks.IntcStat, THREAD_VU1);
 
 	if (EmuConfig.Cpu.Recompiler.EnableFastmem != old_config.Cpu.Recompiler.EnableFastmem)
 		vtlb_ResetFastmem();
@@ -1219,7 +1220,7 @@ void VMManager::ApplySettings()
 	if (running)
 	{
 		if (THREAD_VU1)
-			vu1Thread.WaitVU();
+			mtvu_wait_vu();
 		MTGS::WaitGS(false);
 	}
 

@@ -537,7 +537,7 @@ void mVUinit(microVU& mVU, uint vuIndex)
 	mVU.progSize     = (mVU.index ? 0x4000 : 0x1000) / 4;
 	mVU.mscalMemo    = (microMscalMemoA*)calloc(mVU.progSize / 2, sizeof(microMscalMemoA));
 	mVU.progMemMask  =  mVU.progSize-1;
-	// The libretro fork has no fixed HostMemoryMap code arena; give each VU a
+	// The libretro fork has no fixed code-map arena; give each VU a
 	// dedicated RWX mmap (same 64 MB budget as upstream's mVU0/1recSize).
 	static u8* s_mvu_cache[2] = {nullptr, nullptr};
 	constexpr size_t kMvuRecSize = 0x4000000;
@@ -878,7 +878,7 @@ static void rec_vu0_shutdown(void)
 static void rec_vu1_shutdown(void)
 {
 	if (vu1Thread.IsOpen())
-		vu1Thread.WaitVU();
+		mtvu_wait_vu();
 	mVUclose(microVU1);
 }
 
@@ -889,7 +889,7 @@ static void rec_vu0_reset(void)
 
 static void rec_vu1_reset(void)
 {
-	vu1Thread.WaitVU();
+	mtvu_wait_vu();
 	vu1Thread.Get_MTVUChanges();
 	mVUreset(microVU1, true);
 }
@@ -984,7 +984,7 @@ const struct VUmicroCpu vucpu_rec_vu1 =
 bool vuJITFreeze(SaveStateBase *s)
 {
 	if (SaveState_IsSaving(s))
-		vu1Thread.WaitVU();
+		mtvu_wait_vu();
 
 	SaveState_Freeze(s, microVU0.prog.lpState);
 	SaveState_Freeze(s, microVU1.prog.lpState);
@@ -1292,7 +1292,7 @@ static void mVUwaitMTVU()
 {
 	if (IsDevBuild)
 		log_cb(RETRO_LOG_DEBUG, "microVU: Waiting on VU1 thread to access VU1 regs!\n");
-	vu1Thread.WaitVU();
+	mtvu_wait_vu();
 }
 
 // A transparent helper-thunk: the register allocator does not know this call

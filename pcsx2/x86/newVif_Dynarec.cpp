@@ -24,31 +24,25 @@
 
 void dVifReserve(int idx)
 {
-	if (nVif[idx].recReserve)
+	if (nVif[idx].recReserve.baseptr)
 		return;
-	
-	const size_t offset = idx ? HostMemoryMap::VIF1recOffset : HostMemoryMap::VIF0recOffset;
+
 	/* VIF Unpack Recompiler Cache */
-	nVif[idx].recReserve = new RecompiledCodeReserve();
-	nVif[idx].recReserve->Assign(GetVmMemory().CodeMemory(), offset, 8 * _1mb);
+	code_reserve_assign(&nVif[idx].recReserve, &GetVmMemory()->code,
+			idx ? HOSTMEM_VIF1REC_OFFSET : HOSTMEM_VIF0REC_OFFSET, 8 * _1mb);
 }
 
 void dVifReset(int idx)
 {
 	vif_hash_reset(&nVif[idx].vifBlocks);
 
-	nVif[idx].recReserve->Reset();
-
-	nVif[idx].recWritePtr = nVif[idx].recReserve->GetPtr();
+	nVif[idx].recWritePtr = nVif[idx].recReserve.baseptr;
 }
 
 void dVifRelease(int idx)
 {
 	vif_hash_clear(&nVif[idx].vifBlocks);
-	if (nVif[idx].recReserve)
-		nVif[idx].recReserve->Reset();
-	delete nVif[idx].recReserve;
-	nVif[idx].recReserve = NULL;
+	code_reserve_release(&nVif[idx].recReserve);
 }
 
 void VifUnpackSSE_InitDynarec(struct VifUnpackSSE* p, const nVifStruct* vif_, const nVifBlock* vifBlock_)
@@ -322,14 +316,14 @@ _vifT __fi nVifBlock* dVifCompile(nVifBlock* block, int isFill)
 	 * before the end of this VIF's 8 MB reserve: VIF1's follows VIF0's
 	 * and microVU0's follows VIF1's. Out of room, the cache starts over;
 	 * block is a copy on the caller's stack, so it survives the reset. */
-	if (v.recWritePtr > v.recReserve->GetPtrEnd() - _256kb)
+	if (v.recWritePtr > v.recReserve.baseptr + v.recReserve.size - _256kb)
 		dVifReset(idx);
 
 	/* Compile the block now */
 	x86Ptr = (u8*)(v.recWritePtr);
 
 	// +1 bias keeps 0 as the empty-cell sentinel; reserve is 8MB so u32 always fits
-	block->f.startOffset = (u32)((u8*)x86Ptr - v.recReserve->GetPtr()) + 1;
+	block->f.startOffset = (u32)((u8*)x86Ptr - v.recReserve.baseptr) + 1;
 	block->f.length = dVifComputeLength(block->f.cl, block->f.wl, block->f.num, isFill);
 	vif_hash_add(&v.vifBlocks, block);
 
@@ -390,7 +384,7 @@ _vifT __fi void dVifUnpack(const u8* data, int isFill)
 
 		// No wrapping, you can run the fast dynarec
 		if (likely((startmem + b->f.length) <= endmem))
-			((nVifrecCall)(v.recReserve->GetPtr() + (b->f.startOffset - 1)))((uptr)startmem, (uptr)data);
+			((nVifrecCall)(v.recReserve.baseptr + (b->f.startOffset - 1)))((uptr)startmem, (uptr)data);
 		else
 			_nVifUnpack(idx, data, vifRegs.mode, isFill);
 	}

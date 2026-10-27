@@ -15,148 +15,61 @@
 
 #pragma once
 
+#include <stddef.h>
 #include <retro_atomic.h>
 #include "../common/General.h"
 
-/* The code reserve below holds a manager pointer without ever completing the
- * type, so C needs a name for it and nothing more. */
 #ifdef __cplusplus
-class VirtualMemoryManager;
-#else
-typedef struct VirtualMemoryManager VirtualMemoryManager;
+extern "C" {
 #endif
 
-#ifdef __cplusplus
-
-#include <memory>
-
-// --------------------------------------------------------------------------------------
-//  VirtualMemoryManager: Manages the allocation of PCSX2 VM
-//    Ensures that all memory is close enough together for rip-relative addressing
-// --------------------------------------------------------------------------------------
-class VirtualMemoryManager
+/* --------------------------------------------------------------------------
+ *  VirtualMemoryManager
+ * --------------------------------------------------------------------------
+ * One block of address space the VM's memory or recompiled code lives in.
+ * vmm_init sets up the bookkeeping and, given a name, the shared-memory
+ * backing (the main map is backed so fastmem can alias it); vmm_map then puts
+ * the block at an address, and can be retried at another without recreating
+ * the backing. Pieces of a mapped block are handed out with vmm_alloc. */
+typedef struct VirtualMemoryManager
 {
-	DeclareNoncopyableObject(VirtualMemoryManager);
+	void* file_handle;           /* shared-memory backing, or NULL: anonymous RWX */
+	u8* baseptr;                 /* NULL while unmapped */
+	retro_atomic_int_t* pageuse; /* one flag per page, set while handed out */
+	size_t size;                 /* page-aligned */
+} VirtualMemoryManager;
 
-	void* m_file_handle;
-	u8* m_baseptr;
+bool vmm_init(VirtualMemoryManager* m, const char* file_mapping_name, size_t size);
+/* Maps the block at exactly base, or anywhere when base is 0. */
+bool vmm_map(VirtualMemoryManager* m, uptr base);
+void vmm_unmap(VirtualMemoryManager* m);
+void vmm_destroy(VirtualMemoryManager* m);
 
-	// An array to track page usage (to trigger asserts if things try to overlap)
-	retro_atomic_int_t* m_pageuse;
+/* The size bytes at offset (both page-aligned) of a mapped block, or NULL
+ * when any of those pages is already handed out. */
+u8* vmm_alloc(const VirtualMemoryManager* m, uptr offset, size_t size);
+void vmm_free(const VirtualMemoryManager* m, void* address, size_t size);
 
-	// reserved memory (in pages)
-	u32 m_pages_reserved;
+#define vmm_is_ok(m) ((m)->baseptr != NULL)
 
-public:
-	// If upper_bounds is nonzero and the OS fails to allocate memory that is below it,
-	// calls to IsOk() will return false and Alloc() will always return null pointers
-	// strict indicates that the allocation should quietly fail if the memory can't be mapped at `base`
-	VirtualMemoryManager(const char* file_mapping_name, uptr base, size_t size, uptr upper_bounds = 0, bool strict = false);
-	~VirtualMemoryManager();
-
-	void* GetFileHandle() const { return m_file_handle; }
-	u8* GetBase() const { return m_baseptr; }
-
-	// Request the use of the memory at offsetLocation bytes from the start of the reserved memory area
-	// offsetLocation must be page-aligned
-	u8* Alloc(uptr offsetLocation, size_t size) const;
-
-	void Free(void* address, size_t size) const;
-
-	// Was this VirtualMemoryManager successfully able to get its memory mapping?
-	// (If not, calls to Alloc will return null pointers)
-	bool IsOk() const { return m_baseptr != 0; }
-};
-
-typedef std::shared_ptr<const VirtualMemoryManager> VirtualMemoryManagerPtr;
-
-// --------------------------------------------------------------------------------------
-//  VirtualMemoryBumpAllocator: Allocates memory for things that don't have explicitly-reserved spots
-// --------------------------------------------------------------------------------------
-class VirtualMemoryBumpAllocator
+/* --------------------------------------------------------------------------
+ *  Bump allocator: the tail of a block, for allocations with no fixed spot
+ * -------------------------------------------------------------------------- */
+typedef struct VirtualMemoryBumpAllocator
 {
-	const VirtualMemoryManagerPtr m_allocator;
-	/* Bump cursor as an atomic address value: retro_atomic_size_t,
-	 * since retro_atomic pointers have no fetch_add. */
-	retro_atomic_size_t m_basecursor = 0;
-	const u8* m_endptr = 0;
+	retro_atomic_size_t cursor; /* next free address; 0 when the block was not mapped */
+} VirtualMemoryBumpAllocator;
 
-public:
-	VirtualMemoryBumpAllocator(VirtualMemoryManagerPtr allocator, size_t size, uptr offsetLocation);
-	u8* Alloc(size_t size);
-	const VirtualMemoryManagerPtr& GetAllocator() { return m_allocator; }
-};
-
-// --------------------------------------------------------------------------------------
-//  VirtualMemoryReserve
-// --------------------------------------------------------------------------------------
-class VirtualMemoryReserve
-{
-	DeclareNoncopyableObject(VirtualMemoryReserve);
-
-protected:
-	// Where the memory came from (so we can return it)
-	VirtualMemoryManagerPtr m_allocator;
-
-	u8* m_baseptr = nullptr;
-	size_t m_size = 0;
-
-public:
-	VirtualMemoryReserve();
-	virtual ~VirtualMemoryReserve();
-
-	// Initialize with the given piece of memory
-	// Note: The memory is already allocated, the allocator is for future use to free the region
-	// It may be null in which case there is no way to free the memory in a way it will be usable again
-	void Assign(VirtualMemoryManagerPtr allocator, u8* baseptr, size_t size);
-
-	u8* BumpAllocate(VirtualMemoryBumpAllocator& allocator, size_t size);
-
-	void Release();
-
-	bool IsOk() const { return m_baseptr != NULL; }
-
-	u8* GetPtr() { return m_baseptr; }
-	const u8* GetPtr() const { return m_baseptr; }
-	u8* GetPtrEnd() { return m_baseptr + m_size; }
-	const u8* GetPtrEnd() const { return m_baseptr + m_size; }
-
-	size_t GetSize() const { return m_size; }
-
-	operator void*() { return m_baseptr; }
-	operator const void*() const { return m_baseptr; }
-
-	operator u8*() { return (u8*)m_baseptr; }
-	operator const u8*() const { return (u8*)m_baseptr; }
-
-	u8& operator[](uint idx)
-	{
-		return *((u8*)m_baseptr + idx);
-	}
-
-	const u8& operator[](uint idx) const
-	{
-		return *((u8*)m_baseptr + idx);
-	}
-};
-
-#endif /* __cplusplus */
+void vmm_bump_init(VirtualMemoryBumpAllocator* b, const VirtualMemoryManager* m, uptr offset, size_t size);
+u8* vmm_bump_alloc(VirtualMemoryBumpAllocator* b, size_t size);
 
 /* --------------------------------------------------------------------------
  *  Code reserve
  * --------------------------------------------------------------------------
  * A recompiled-code reserve is a sequential-growth block of executable memory
- * carved out of the main code map. C89 shape: a plain struct plus functions.
- * It added no state of its own over VirtualMemoryReserve -- only the Assign
- * that resolves an offset into the code map, and the two MemProtect helpers --
- * so it does not need to derive from anything.
- *
- * The manager pointer is held as a raw pointer rather than the shared_ptr the
- * C++ reserve kept: every code reserve is owned by a recompiler that is torn
- * down before the VM's memory map, so the reserve never outlives its manager.
- * code_reserve_release still calls Free through it, exactly as the old
- * destructor did.
- */
+ * carved out of the code map. Every code reserve is owned by a recompiler
+ * that is torn down before the VM's memory map, so the reserve never
+ * outlives its manager. */
 struct CodeReserve
 {
 	u8*    baseptr;
@@ -170,25 +83,6 @@ void code_reserve_release(struct CodeReserve* r);
 void code_reserve_allow_modification(struct CodeReserve* r);
 void code_reserve_forbid_modification(struct CodeReserve* r);
 
-/* The GS software JIT keeps the C++ reserve: GSCodeReserve derives from it and
- * the GS code map is not part of this conversion. */
 #ifdef __cplusplus
-class RecompiledCodeReserve : public VirtualMemoryReserve
-{
-	typedef VirtualMemoryReserve _parent;
-
-public:
-	RecompiledCodeReserve();
-	~RecompiledCodeReserve();
-
-	void Assign(VirtualMemoryManagerPtr allocator, size_t offset, size_t size);
-	void Reset();
-
-	void ForbidModification();
-	void AllowModification();
-
-	operator u8*() { return m_baseptr; }
-	operator const u8*() const { return m_baseptr; }
-};
-
-#endif /* __cplusplus */
+}
+#endif

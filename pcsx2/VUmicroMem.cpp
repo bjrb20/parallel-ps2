@@ -17,45 +17,42 @@
 #include <utility>
 
 #include "Common.h"
+#include "../common/Align.h"
 #include "VUmicro.h"
 #include "MTVU.h"
 
 alignas(16) VURegs vuRegs[2]{};
 
 /* VU0/1 on-chip memory */
-vuMemoryReserve::vuMemoryReserve() : _parent() { }
-vuMemoryReserve::~vuMemoryReserve() { Release(); }
+#define VU_MEMORY_RESERVE_ALIGNED pcsx2_page_align(VU_MEMORY_RESERVE_SIZE)
 
-void vuMemoryReserve::Assign(VirtualMemoryManagerPtr allocator)
+void vu_memory_assign(const VirtualMemoryManager* main_map)
 {
-	static constexpr u32 VU_MEMORY_RESERVE_SIZE = VU1_PROGSIZE + VU1_MEMSIZE + VU0_PROGSIZE + VU0_MEMSIZE;
+	u8* curpos = vmm_alloc(main_map, HOSTMEM_VUMEM_OFFSET, VU_MEMORY_RESERVE_ALIGNED);
 
-	_parent::Assign(std::move(allocator), HostMemoryMap::VUmemOffset, VU_MEMORY_RESERVE_SIZE);
-
-	u8* curpos = GetPtr();
-	vuRegs[0].Micro	= curpos;
+	vuRegs[0].Micro = curpos;
 	curpos += VU0_PROGSIZE;
-	vuRegs[0].Mem	= curpos;
+	vuRegs[0].Mem   = curpos;
 	curpos += VU0_MEMSIZE;
-	vuRegs[1].Micro	= curpos;
+	vuRegs[1].Micro = curpos;
 	curpos += VU1_PROGSIZE;
-	vuRegs[1].Mem	= curpos;
-	curpos += VU1_MEMSIZE;
+	vuRegs[1].Mem   = curpos;
 }
 
-void vuMemoryReserve::Release()
+void vu_memory_release(const VirtualMemoryManager* main_map)
 {
-	_parent::Release();
+	if (vuRegs[0].Micro)
+		vmm_free(main_map, vuRegs[0].Micro, VU_MEMORY_RESERVE_ALIGNED);
 
-	vuRegs[0].Micro = nullptr;
-	vuRegs[0].Mem   = nullptr;
-	vuRegs[1].Micro = nullptr;
-	vuRegs[1].Mem   = nullptr;
+	vuRegs[0].Micro = NULL;
+	vuRegs[0].Mem   = NULL;
+	vuRegs[1].Micro = NULL;
+	vuRegs[1].Mem   = NULL;
 }
 
-void vuMemoryReserve::Reset()
+void vu_memory_reset(void)
 {
-	_parent::Reset();
+	memset(vuRegs[0].Micro, 0, VU_MEMORY_RESERVE_ALIGNED);
 
 	// === VU0 Initialization ===
 	memset(&vuRegs[0].ACC, 0, sizeof(vuRegs[0].ACC));
@@ -81,7 +78,7 @@ void vuMemoryReserve::Reset()
 bool vuMicroFreeze(SaveStateBase *s)
 {
 	if(SaveState_IsSaving(s))
-		vu1Thread.WaitVU();
+		mtvu_wait_vu();
 
 	if (!(SaveState_FreezeTag(s,  "vuMicroRegs" )))
 		return false;

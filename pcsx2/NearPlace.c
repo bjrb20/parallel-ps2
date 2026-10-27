@@ -24,12 +24,6 @@
 #endif
 #endif
 #endif
-#ifndef MAP_ANON
-#define MAP_ANON MAP_ANONYMOUS
-#endif
-#ifndef MAP_NORESERVE
-#define MAP_NORESERVE 0
-#endif
 #endif
 
 /* Where the image cannot be measured, it is assumed to span this much either
@@ -39,6 +33,8 @@
 #define NEAR_FLOOR ((uintptr_t)0x10000)
 /* Probe stride where the free ranges cannot be enumerated. */
 #define NEAR_STEP ((uintptr_t)0x04000000)
+/* Strides each way the quick pass tries before the address space is read. */
+#define NEAR_QUICK_STEPS 2
 #define NEAR_TOP (~(uintptr_t)0)
 
 void near_hull(near_range_t *r, const near_range_t *add)
@@ -232,24 +228,23 @@ void near_search_gap(near_search_t *s, uintptr_t lo, uintptr_t hi)
 	s->span[i] = span;
 }
 
-#if defined(_WIN32) || (defined(__linux__) && !defined(NEAR_FORCE_STEPPED))
 /* The last address a candidate's reservation can reach. */
 static uintptr_t near_scan_top(const near_search_t *s)
 {
 	return s->window.hi <= NEAR_TOP - s->size ? s->window.hi + s->size : NEAR_TOP;
 }
-#endif
 
-#if !defined(_WIN32)
-/* Without a map of the address space, offer size-byte ranges stepping outward
- * from the target's edges; the kernel's acceptance of the hint is what tells
- * them apart. The target itself is occupied, so nothing is offered inside it. */
-static void near_scan_stepped(near_search_t *s)
+/* Offer size-byte ranges stepping outward from the target's edges, at most
+ * steps strides each way (0: across the whole window); the kernel's
+ * acceptance of the hint is what tells them apart. The target itself is
+ * occupied, so nothing is offered inside it. */
+static void near_scan_stepped(near_search_t *s, unsigned steps)
 {
 	uintptr_t mask = ~(s->align - 1);
 	uintptr_t down = s->target.lo >= (uintptr_t)s->size ? (s->target.lo - s->size) & mask : 0;
 	uintptr_t up   = s->target.hi <= NEAR_TOP - (s->align - 1) ? (s->target.hi + s->align - 1) & mask : NEAR_TOP;
 	uintptr_t off  = 0;
+	unsigned n     = 0;
 
 	for (;;)
 	{
@@ -261,12 +256,19 @@ static void near_scan_stepped(near_search_t *s)
 			near_search_gap(s, down - off, down - off + s->size);
 		if (u)
 			near_search_gap(s, up + off, up + off + s->size);
-		if (off > NEAR_TOP - NEAR_STEP)
+		if (++n == steps || off > NEAR_TOP - NEAR_STEP)
 			break;
 		off += NEAR_STEP;
 	}
 }
-#endif
+
+void near_search_quick(near_search_t *s)
+{
+	if (s->window.lo <= s->window.hi)
+		near_scan_stepped(s, NEAR_QUICK_STEPS);
+}
+
+typedef void (*near_free_fn)(void *ctx, uintptr_t lo, uintptr_t hi);
 
 /* NEAR_FORCE_STEPPED: the harness's lane for the platforms without a map. */
 #if defined(__linux__) && !defined(NEAR_FORCE_STEPPED)
@@ -290,14 +292,32 @@ static uintptr_t near_hex(const char **pp)
 	*pp = p;
 	return v;
 }
+#endif
 
-/* /proc/self/maps lists the mappings in address order; the free ranges are
- * the spaces between them. Returns 0 when it cannot be read. */
-static int near_scan_maps(near_search_t *s)
+/* Calls fn for each free range of this process's address space that meets
+ * [lo, top). Returns 0 where the address space cannot be enumerated.
+ * /proc/self/maps lists the mappings in address order, so the free ranges
+ * are the spaces between them; Windows walks them with VirtualQuery. */
+static int near_enum_free(uintptr_t lo, uintptr_t top, near_free_fn fn, void *ctx)
 {
+#if defined(_WIN32)
+	MEMORY_BASIC_INFORMATION mbi;
+	uintptr_t addr = lo;
+
+	while (addr < top && VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi)) == sizeof(mbi))
+	{
+		uintptr_t rlo = (uintptr_t)mbi.BaseAddress;
+		uintptr_t rhi = rlo + (uintptr_t)mbi.RegionSize;
+		if (mbi.State == MEM_FREE)
+			fn(ctx, rlo, rhi);
+		if (rhi <= addr)
+			break;
+		addr = rhi;
+	}
+	return 1;
+#elif defined(__linux__) && !defined(NEAR_FORCE_STEPPED)
 	char line[256];
 	uintptr_t prev = 0;
-	uintptr_t top  = near_scan_top(s);
 	FILE *f        = fopen("/proc/self/maps", "r");
 
 	if (!f)
@@ -307,8 +327,8 @@ static int near_scan_maps(near_search_t *s)
 		const char *p = line;
 		size_t n      = strlen(line);
 		int whole     = n && line[n - 1] == '\n';
-		uintptr_t lo  = near_hex(&p);
-		uintptr_t hi;
+		uintptr_t rlo = near_hex(&p);
+		uintptr_t rhi;
 
 		/* A long path leaves the rest of its line for the next reads. */
 		while (!whole && fgets(line, sizeof(line), f))
@@ -319,84 +339,145 @@ static int near_scan_maps(near_search_t *s)
 		if (*p != '-')
 			continue;
 		p++;
-		hi = near_hex(&p);
-		if (lo > prev)
-			near_search_gap(s, prev, lo);
-		if (hi > prev)
-			prev = hi;
+		rhi = near_hex(&p);
+		if (rlo > prev && rlo > lo)
+			fn(ctx, prev, rlo);
+		if (rhi > prev)
+			prev = rhi;
 		if (prev >= top)
 			break;
 	}
 	fclose(f);
 	if (prev < top)
-		near_search_gap(s, prev, top);
+		fn(ctx, prev, top);
 	return 1;
-}
+#else
+	(void)lo;
+	(void)top;
+	(void)fn;
+	(void)ctx;
+	return 0;
 #endif
+}
 
-#if defined(_WIN32)
-static void near_scan_query(near_search_t *s)
+static void near_gap_to_search(void *ctx, uintptr_t lo, uintptr_t hi)
 {
-	MEMORY_BASIC_INFORMATION mbi;
-	uintptr_t addr = s->window.lo;
-	uintptr_t top  = near_scan_top(s);
-
-	while (addr < top && VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi)) == sizeof(mbi))
-	{
-		uintptr_t rlo = (uintptr_t)mbi.BaseAddress;
-		uintptr_t rhi = rlo + (uintptr_t)mbi.RegionSize;
-		if (mbi.State == MEM_FREE)
-			near_search_gap(s, rlo, rhi);
-		if (rhi <= addr)
-			break;
-		addr = rhi;
-	}
+	near_search_gap((near_search_t *)ctx, lo, hi);
 }
-#endif
 
 void near_search_scan(near_search_t *s)
 {
 	if (s->window.lo > s->window.hi)
 		return;
-#if defined(_WIN32)
-	near_scan_query(s);
-#else
-#if defined(__linux__) && !defined(NEAR_FORCE_STEPPED)
-	if (near_scan_maps(s))
+	if (!near_enum_free(s->window.lo, near_scan_top(s), near_gap_to_search, s))
+		near_scan_stepped(s, 0);
+}
+
+static void near_gap_to_space(void *ctx, uintptr_t lo, uintptr_t hi)
+{
+	near_space_t *sp = (near_space_t *)ctx;
+	if (hi - lo < sp->min_size || sp->count == NEAR_MAX_GAPS)
 		return;
-#endif
-	near_scan_stepped(s);
-#endif
+	sp->gap[sp->count].lo = lo;
+	sp->gap[sp->count].hi = hi;
+	sp->count++;
 }
 
-static int near_probe(uintptr_t base, size_t size)
+int near_space_read(near_space_t *sp, uintptr_t lo, uintptr_t hi, size_t min_size)
 {
-#if defined(_WIN32)
-	void *p = VirtualAlloc((LPVOID)base, size, MEM_RESERVE, PAGE_NOACCESS);
-	if (!p)
-		return 0;
-	VirtualFree(p, 0, MEM_RELEASE);
-	return (uintptr_t)p == base;
-#else
-	void *p = mmap((void *)base, size, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
-	if (p == MAP_FAILED)
-		return 0;
-	munmap(p, size);
-	return (uintptr_t)p == base;
-#endif
+	sp->count    = 0;
+	sp->min_size = min_size;
+	return near_enum_free(lo, hi, near_gap_to_space, sp);
 }
 
-int near_place_room(const near_range_t *target, size_t size, uintptr_t limit,
-		uintptr_t align)
+void near_search_space(near_search_t *s, const near_space_t *sp, const near_range_t *exclude)
 {
-	near_search_t s;
 	unsigned i;
+	for (i = 0; i < sp->count; i++)
+	{
+		const near_range_t *g = &sp->gap[i];
+		if (!exclude || exclude->hi <= g->lo || exclude->lo >= g->hi)
+		{
+			near_search_gap(s, g->lo, g->hi);
+			continue;
+		}
+		if (exclude->lo > g->lo)
+			near_search_gap(s, g->lo, exclude->lo);
+		if (exclude->hi < g->hi)
+			near_search_gap(s, exclude->hi, g->hi);
+	}
+}
 
-	if (!near_search_init(&s, target, size, limit, align, 0))
+/* Pass 0 offers the quick bases; pass 1 the address space, or where it
+ * cannot be read the whole stepped window. */
+static void near_offer(near_search_t *s, unsigned pass, const near_space_t *sp, int have_space,
+		const near_range_t *exclude)
+{
+	if (pass == 0)
+		near_search_quick(s);
+	else if (have_space)
+		near_search_space(s, sp, exclude);
+	else
+		near_search_scan(s);
+}
+
+/* One pass of near_place_pair. */
+static int near_place_pass(unsigned pass, const near_space_t *sp, int have_space,
+		const near_range_t *image, size_t main_size, uintptr_t main_ceiling, size_t code_size,
+		uintptr_t limit, uintptr_t align, const near_pair_ops_t *ops)
+{
+	near_search_t ms;
+	near_search_t cs;
+	near_range_t target;
+	near_range_t main_r;
+	unsigned i;
+	unsigned j;
+
+	if ((uintptr_t)code_size >= limit
+			|| !near_search_init(&ms, image, main_size, limit - code_size, align, main_ceiling))
 		return 0;
-	near_search_scan(&s);
-	for (i = 0; i < s.count; i++)
-		if (near_probe(s.base[i], size))
-			return 1;
+	near_offer(&ms, pass, sp, have_space, NULL);
+	for (i = 0; i < ms.count; i++)
+	{
+		if (!ops->map_main(ops->ctx, ms.base[i]))
+			continue;
+		main_r.lo = ms.base[i];
+		main_r.hi = ms.base[i] + main_size;
+		target    = *image;
+		near_hull(&target, &main_r);
+		if (near_search_init(&cs, &target, code_size, limit, align, 0))
+		{
+			near_offer(&cs, pass, sp, have_space, &main_r);
+			for (j = 0; j < cs.count; j++)
+				if (ops->map_code(ops->ctx, cs.base[j]))
+					return 1;
+		}
+		ops->unmap_main(ops->ctx);
+		/* A crowded neighbourhood: on to the address space. */
+		if (pass == 0)
+			break;
+	}
 	return 0;
+}
+
+int near_place_pair(near_space_t *sp, const near_range_t *image, size_t main_size,
+		uintptr_t main_ceiling, size_t code_size, uintptr_t limit, uintptr_t align,
+		const near_pair_ops_t *ops)
+{
+	int have_space;
+	if (near_place_pass(0, sp, 0, image, main_size, main_ceiling, code_size, limit, align, ops))
+		return 1;
+	have_space = near_space_read(sp, image->hi > limit ? image->hi - limit : 0,
+			image->lo <= NEAR_TOP - limit ? image->lo + limit : NEAR_TOP,
+			code_size < main_size ? code_size : main_size);
+	return near_place_pass(1, sp, have_space, image, main_size, main_ceiling, code_size, limit, align, ops);
+}
+
+int near_place_pair_in(const near_space_t *sp, const near_range_t *image, size_t main_size,
+		uintptr_t main_ceiling, size_t code_size, uintptr_t limit, uintptr_t align,
+		const near_pair_ops_t *ops)
+{
+	if (near_place_pass(0, sp, 0, image, main_size, main_ceiling, code_size, limit, align, ops))
+		return 1;
+	return near_place_pass(1, sp, 1, image, main_size, main_ceiling, code_size, limit, align, ops);
 }

@@ -7,7 +7,7 @@
 // The block-cache logic (hash keys, dVifUnpack flow) is line-for-line the same
 // as lrps2's x86 newVif_Dynarec.cpp -- the two trees never diverged here --
 // only the emitter is NEON and the code cache is a plain RWX mmap per VIF
-// index (lrps2's RecompiledCodeReserve infra stays x86-only).
+// index (lrps2's code-map reserves stay x86-only).
 
 #include "arm64/Vif_UnpackNEON.h"
 #include "common/Pcsx2Defs.h"
@@ -182,8 +182,8 @@ static void maskedVecWrite(const a64::VRegister& reg, const a64::MemOperand& add
 	}
 }
 
-// Plain RWX mmap per VIF index (8MB, same budget the x86 side gives
-// RecompiledCodeReserve). Bases live here; nVifStruct keeps the write/end
+// Plain RWX mmap per VIF index (8MB, same budget the x86 side gives its
+// code reserve). Bases live here; nVifStruct keeps the write/end
 // cursors so dVifCompile's overflow check mirrors the ARMSX2 original.
 static u8* s_vifCode[2] = {nullptr, nullptr};
 static constexpr size_t kVifCodeSize = 8 * 1024 * 1024;
@@ -519,7 +519,7 @@ _vifT __fi nVifBlock* dVifCompile(nVifBlock& block, bool isFill)
 	// +1 bias keeps 0 as the empty-cell sentinel; reserve is 8MB so u32 always fits
 	/* Offsets are relative to this port's own VIF code region: arm64 mmaps
 	 * s_vifCode[idx] in dVifReserve and never populates nVifStruct::
-	 * recReserve, which is x86's RecompiledCodeReserve and is NULL here. */
+	 * recReserve, the x86 code reserve, which stays empty here. */
 	block.f.startOffset = (u32)((u8*)armStartBlock() - s_vifCode[idx]) + 1;
 	block.f.length = dVifComputeLength(block.f.cl, block.f.wl, block.f.num, isFill);
 	vif_hash_add(&v.vifBlocks, &block);

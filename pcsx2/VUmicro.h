@@ -29,6 +29,9 @@
 #define VU0_MEMMASK	(VU0_MEMSIZE-1)
 #define VU0_PROGMASK	(VU0_PROGSIZE-1)
 #define VU1_MEMMASK	(VU1_MEMSIZE-1)
+
+/* VU0/VU1 micro and data memory, one block in the main map. */
+#define VU_MEMORY_RESERVE_SIZE (VU1_PROGSIZE + VU1_MEMSIZE + VU0_PROGSIZE + VU0_MEMSIZE)
 #define VU1_PROGMASK	(VU1_PROGSIZE-1)
 
 #define vu1RunCycles (3000000) // mVU1 uses this for inf loop detection on dev builds
@@ -73,16 +76,33 @@ extern const struct VUmicroCpu vucpu_rec_vu1;
 void vucpu_rec_vu0_reserve(void);
 void vucpu_rec_vu1_reserve(void);
 
-extern const struct VUmicroCpu* CpuVU0;
-extern const struct VUmicroCpu* CpuVU1;
-
-
-/* COP2.c calls these two, so they carry C linkage. */
+/* COP2.c and Memory.c reach these, so they carry C linkage. */
 #ifdef __cplusplus
 extern "C" {
 #endif
+extern const struct VUmicroCpu* CpuVU0;
+extern const struct VUmicroCpu* CpuVU1;
+
 extern void vu0ExecMicro(u32 addr);
 extern void _vu0FinishMicro(void);
+
+/* The VU memory block in the main map: points vuRegs at it, clears it, and
+ * hands it back. */
+struct VirtualMemoryManager;
+extern void vu_memory_assign(const struct VirtualMemoryManager* main_map);
+extern void vu_memory_reset(void);
+extern void vu_memory_release(const struct VirtualMemoryManager* main_map);
+
+/* MTVU (MTVU.cpp): wait for the VU1 thread to drain its ring, and queue
+ * writes to VU1 memory through it. A write of a known width takes a slot in
+ * the ring with mtvu_write_mem_begin, stores the data straight into it and
+ * publishes it with mtvu_write_mem_commit; the _micro/_data_mem forms copy
+ * from a buffer. */
+extern void mtvu_wait_vu(void);
+extern void* mtvu_write_mem_begin(int data_mem, u32 addr, u32 size);
+extern void mtvu_write_mem_commit(void);
+extern void mtvu_write_micro_mem(u32 vu_micro_addr, const void* data, u32 size);
+extern void mtvu_write_data_mem(u32 vu_data_addr, const void* data, u32 size);
 #ifdef __cplusplus
 }
 #endif

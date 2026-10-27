@@ -30,10 +30,10 @@
 // --------------------------------------------------------------------------------------
 //  PageProtectionMode
 // --------------------------------------------------------------------------------------
-struct PageProtectionMode
+typedef struct PageProtectionMode
 {
 	bool m_read;
 	bool m_write;
 	bool m_exec;
-};
+} PageProtectionMode;
 

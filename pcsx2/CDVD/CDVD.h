@@ -16,6 +16,7 @@
 #pragma once
 
 #include "CDVDcommon.h"
+#include "CDVDnvram.h"
 
 #include <string>
 
@@ -154,8 +155,6 @@ extern cdvdStruct cdvd;
 
 extern void cdvdReadLanguageParams(u8* config);
 
-extern void cdvdLoadNVRAM(void);
-extern void cdvdSaveNVRAM(void);
 extern void cdvdReset(void);
 extern void cdvdVsync(void);
 extern void cdvdActionInterrupt(void);

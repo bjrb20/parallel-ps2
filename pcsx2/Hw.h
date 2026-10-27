@@ -371,3 +371,17 @@ enum GSRegisterAddresses
 
 void hwReset(void);
 
+
+/* The EE hardware register handlers, one set per 4K page of 0x1000xxxx
+ * (Hw.cpp, where each page's set is a template instantiation). C, so
+ * Memory.c registers them with the vtlb. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+/* Registers page's set (0x0 to 0xe) and returns its vtlb handler. */
+extern u32 hwRegisterPageHandlers(u32 page);
+/* Points handler at page 0xf's set, with the INTC_STAT fast-forward or not. */
+extern void hwAssignPage0FHandlers(u32 handler, bool intc_stat_hack);
+#ifdef __cplusplus
+}
+#endif

@@ -46,6 +46,7 @@
 #include "COP0.h"
 #include "Cache.h"
 #include "IopMem.h"
+#include "VUmicro.h"
 #include "Host.h"
 #include "R5900.h"
 #include "Config.h"
@@ -92,7 +93,7 @@ static u32* s_fastmem_virtual_mapping; // maps vaddr page -> mainmem offset; FAS
  * bump allocator at 0x10000000), chaining index+1 links through a grown
  * node pool, so an all-zero table is the empty state and clearing is a
  * memset. Replaces a std::unordered_multimap and its per-entry nodes. */
-#define FASTMEM_PHYS_PAGES ((u32)(HostMemoryMap::bumpAllocatorOffset / VTLB_PAGE_SIZE))
+#define FASTMEM_PHYS_PAGES ((u32)(HOSTMEM_BUMP_OFFSET / VTLB_PAGE_SIZE))
 typedef struct
 {
 	u32 vaddr;
@@ -800,14 +801,15 @@ static bool vtlb_IsHostCoalesced(u32 page)
 static bool vtlb_GetMainMemoryOffsetFromPtr(uptr ptr, u32* mainmem_offset, u32* mainmem_size, PageProtectionMode* prot)
 {
 	const uptr page_end = ptr + VTLB_PAGE_SIZE;
-	SysMainMemory& vmmem = GetVmMemory();
+	const uptr vumem    = (uptr)vuRegs[0].Micro;
+	const u32 vumem_size = (u32)pcsx2_page_align(VU_MEMORY_RESERVE_SIZE);
 
 	// EE memory and ROMs.
 	if (ptr >= (uptr)eeMem->Main && page_end <= (uptr)eeMem->ZeroRead)
 	{
 		const u32 eemem_offset = (u32)(ptr - (uptr)eeMem->Main);
 		const bool writeable   = ((eemem_offset < Ps2MemSize::MainRam) ? (mmap_GetRamPageInfo(eemem_offset) != ProtMode_Write) : true);
-		*mainmem_offset        = (eemem_offset + HostMemoryMap::EEmemOffset);
+		*mainmem_offset        = (eemem_offset + HOSTMEM_EEMEM_OFFSET);
 		*mainmem_size          = (offsetof(EEVM_MemoryAllocMess, ZeroRead) - eemem_offset);
 		prot->m_read           = true;
 		prot->m_write          = writeable;
@@ -819,7 +821,7 @@ static bool vtlb_GetMainMemoryOffsetFromPtr(uptr ptr, u32* mainmem_offset, u32* 
 	if (ptr >= (uptr)iopMem->Main && page_end <= (uptr)iopMem->P)
 	{
 		const u32 iopmem_offset = (u32)(ptr - (uptr)iopMem->Main);
-		*mainmem_offset = iopmem_offset + HostMemoryMap::IOPmemOffset;
+		*mainmem_offset = iopmem_offset + HOSTMEM_IOPMEM_OFFSET;
 		*mainmem_size = (offsetof(IopVM_MemoryAllocMess, P) - iopmem_offset);
 		prot->m_read  = true;
 		prot->m_write = true;
@@ -829,11 +831,11 @@ static bool vtlb_GetMainMemoryOffsetFromPtr(uptr ptr, u32* mainmem_offset, u32* 
 
 	// VU memory - this includes both data and code for VU0/VU1.
 	// Practically speaking, this is only data, because the code goes through a handler.
-	if (ptr >= (uptr)vmmem.VUMemory().GetPtr() && page_end <= (uptr)vmmem.VUMemory().GetPtrEnd())
+	if (ptr >= vumem && page_end <= vumem + vumem_size)
 	{
-		const u32 vumem_offset = (u32)(ptr - (uptr)vmmem.VUMemory().GetPtr());
-		*mainmem_offset        = vumem_offset + HostMemoryMap::VUmemOffset;
-		*mainmem_size          = vmmem.VUMemory().GetSize() - vumem_offset;
+		const u32 vumem_offset = (u32)(ptr - vumem);
+		*mainmem_offset        = vumem_offset + HOSTMEM_VUMEM_OFFSET;
+		*mainmem_size          = vumem_size - vumem_offset;
 		prot->m_read  = true;
 		prot->m_write = true;
 		prot->m_exec  = false;
@@ -886,7 +888,7 @@ static void vtlb_CreateFastmemMapping(u32 vaddr, u32 mainmem_offset, const PageP
 		const u32 host_page = vtlb_HostPage(page);
 		const u32 host_offset = vtlb_HostAlignOffset(mainmem_offset);
 
-		if (!memshm_area_map(s_fastmem_area, GetVmMemory().MainMemory()->GetFileHandle(), host_offset,
+		if (!memshm_area_map(s_fastmem_area, GetVmMemory()->main.file_handle, host_offset,
 				(memshm_area_base(s_fastmem_area) + __pagesize * (host_page)), __pagesize, host_prot(mode)))
 		{
 			log_cb(RETRO_LOG_ERROR, "Failed to map vaddr %08X to mainmem offset %08X\n", vtlb_HostAlignOffset(vaddr), host_offset);
@@ -1198,7 +1200,7 @@ void vtlb_VMapBuffer(u32 vaddr, void* buffer, u32 size)
 		{
 			PageProtectionMode mode;
 			u32 fm_vaddr      = vaddr;
-			u32 fm_hostoffset = HostMemoryMap::EEmemOffset + offsetof(EEVM_MemoryAllocMess, Scratch);
+			u32 fm_hostoffset = HOSTMEM_EEMEM_OFFSET + offsetof(EEVM_MemoryAllocMess, Scratch);
 			mode.m_read       = true;
 			mode.m_write      = true;
 			mode.m_exec       = false;
@@ -1324,7 +1326,7 @@ bool vtlb_Core_Alloc(void)
 	static vtlb_virt_t* vmap = NULL;
 	if (!vmap)
 	{
-		vmap = (vtlb_virt_t*)GetVmMemory().BumpAllocator().Alloc(VMAP_SIZE);
+		vmap = (vtlb_virt_t*)vmm_bump_alloc(&GetVmMemory()->bump, VMAP_SIZE);
 		if (!vmap)
 		{
 			log_cb(RETRO_LOG_ERROR, "Failed to allocate vtlb vmap\n");
@@ -1356,7 +1358,7 @@ bool vtlb_Core_Alloc(void)
 		if (s_fastmem_area)
 		{
 			u8* const probe = memshm_area_base(s_fastmem_area) + __pagesize;
-			if (memshm_area_map(s_fastmem_area, GetVmMemory().MainMemory()->GetFileHandle(),
+			if (memshm_area_map(s_fastmem_area, GetVmMemory()->main.file_handle,
 					__pagesize, probe, __pagesize, PROT_READ))
 				memshm_area_unmap(s_fastmem_area, probe, __pagesize);
 			else
@@ -1410,7 +1412,7 @@ void vtlb_Alloc_Ppmap(void)
 	static u32* ppmap = NULL;
 
 	if (!ppmap)
-		ppmap = (u32*)GetVmMemory().BumpAllocator().Alloc(PPMAP_SIZE);
+		ppmap = (u32*)vmm_bump_alloc(&GetVmMemory()->bump, PPMAP_SIZE);
 
 	mode.m_read    = true;
 	mode.m_write   = true;
@@ -1453,26 +1455,6 @@ void vtlb_Core_Free(void)
 	memshm_area_free(s_fastmem_area);
 	s_fastmem_area = NULL;
 }
-
-// --------------------------------------------------------------------------------------
-//  VtlbMemoryReserve  (implementations)
-// --------------------------------------------------------------------------------------
-VtlbMemoryReserve::VtlbMemoryReserve() : VirtualMemoryReserve() { }
-
-void VtlbMemoryReserve::Assign(VirtualMemoryManagerPtr allocator, size_t offset, size_t size)
-{
-	// Anything passed to the memory allocator must be page aligned.
-	size     = pcsx2_page_align(size);
-	// Since the memory has already been allocated as part of the main memory map, this should never fail.
-	u8* base = allocator->Alloc(offset, size);
-	VirtualMemoryReserve::Assign(std::move(allocator), base, size);
-}
-
-void VtlbMemoryReserve::Reset()
-{
-	memset(GetPtr(), 0, GetSize());
-}
-
 
 // ===========================================================================================
 //  Memory Protection and Block Checking, vtlb Style!

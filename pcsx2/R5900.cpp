@@ -67,11 +67,9 @@ In fast boot mode, 15 arguments can fit because the only call to EELOAD is "<ELF
 #define KMAXARGS 16
 static uptr g_argPtrs[KMAXARGS];
 
-extern SysMainMemory& GetVmMemory();
-
 void cpuReset()
 {
-	GetVmMemory().Reset();
+	sys_memory_reset(GetVmMemory());
 
 	memset(&cpuRegs, 0, sizeof(cpuRegs));
 	memset(&fpuRegs, 0, sizeof(fpuRegs));

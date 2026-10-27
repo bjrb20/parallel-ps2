@@ -51,99 +51,55 @@
 // important that none of the areas overlap.  In all but superVU's case, failure due to overlap
 // or other conflict will result in the operating system picking a preferred address for the mapping.
 
-/* The host memory map and the VM memory owner. Both are C++: a namespace
- * of constants and a class holding the reserves. C reaches the memory
- * through the macros and vtlb entry points above and below. */
+/* The host memory map: where each piece sits in the main and code maps. */
+#define HOSTMEM_MAIN_SIZE           0x14000000
+#define HOSTMEM_EEMEM_OFFSET        0x00000000 /* PS2 main memory, SPR and ROMs (~40.5MB, rounded up to 64MB) */
+#define HOSTMEM_IOPMEM_OFFSET       0x04000000 /* IOP main memory and ROMs */
+#define HOSTMEM_VUMEM_OFFSET        0x08000000 /* VU0 and VU1 memory */
+#define HOSTMEM_BUMP_OFFSET         0x10000000 /* bump allocator: the rest of the main map */
+
+#define HOSTMEM_CODE_SIZE           0x13100000 /* 305MB */
+#define HOSTMEM_EEREC_OFFSET        0x00000000 /* EE recompiler, 64MB */
+#define HOSTMEM_IOPREC_OFFSET       0x04000000 /* IOP recompiler, 32MB */
+#define HOSTMEM_VIF0REC_OFFSET      0x06000000 /* newVif0 recompiler, 8MB */
+#define HOSTMEM_VIF1REC_OFFSET      0x06800000 /* newVif1 recompiler, 8MB */
+#define HOSTMEM_MVU0REC_OFFSET      0x07000000 /* microVU recompiler, 64MB */
+#define HOSTMEM_MVU1REC_OFFSET      0x0B000000 /* microVU recompiler, 64MB */
+#define HOSTMEM_VIFUNPACKREC_OFFSET 0x0F000000 /* SSE VIF unpack functions, 1MB */
+#define HOSTMEM_SWREC_OFFSET        0x0F100000 /* software renderer JIT */
+#define HOSTMEM_SWREC_SIZE          0x04000000
+
 #ifdef __cplusplus
+extern "C" {
+#endif
 
-namespace HostMemoryMap
+/* The VM's memory: the main map (guest memory, shared-memory backed so
+ * fastmem can alias it) and the code map the recompilers carve up. */
+typedef struct SysMainMemory
 {
-	//////////////////////////////////////////////////////////////////////////
-	// Main
-	//////////////////////////////////////////////////////////////////////////
-	static const u32 MainSize = 0x14000000;
+	VirtualMemoryManager main;
+	VirtualMemoryManager code;
+	VirtualMemoryBumpAllocator bump;
+} SysMainMemory;
 
-	// PS2 main memory, SPR, and ROMs (approximately 40.5MB, but we round up to 64MB for simplicity).
-	static const u32 EEmemOffset   = 0x00000000;
+/* Reserves both maps; the guest memory in them is carved out by
+ * sys_memory_allocate. sys_memory_destroy undoes both. */
+bool sys_memory_init(SysMainMemory* m);
+void sys_memory_destroy(SysMainMemory* m);
+bool sys_memory_allocate(SysMainMemory* m);
+void sys_memory_reset(SysMainMemory* m);
+void sys_memory_release(SysMainMemory* m);
 
-	// IOP main memory and ROMs
-	static const u32 IOPmemOffset  = 0x04000000;
+extern SysMainMemory* GetVmMemory(void);
 
-	// VU0 and VU1 memory.
-	static const u32 VUmemOffset   = 0x08000000;
+/* Binds the handlers that depend on configuration: the INTC_STAT
+ * fast-forward and whether VU1 memory accesses go through the MTVU thread.
+ * Called whenever either may have changed; resets keep the last binding. */
+extern void memBindConditionalHandlers(bool intc_stat_hack, bool thread_vu1);
 
-	// Bump allocator for any other small allocations
-	// size: Difference between it and HostMemoryMap::Size, so nothing should allocate higher than it!
-	static const u32 bumpAllocatorOffset = 0x10000000;
-
-	//////////////////////////////////////////////////////////////////////////
-	// Code
-	//////////////////////////////////////////////////////////////////////////
-	static const u32 CodeSize = 0x13100000; // 305 mb
-
-	// EE recompiler code cache area (64mb)
-	static const u32 EErecOffset   = 0x00000000;
-
-	// IOP recompiler code cache area (32mb)
-	static const u32 IOPrecOffset  = 0x04000000;
-
-	// newVif0 recompiler code cache area (8mb)
-	static const u32 VIF0recOffset = 0x06000000;
-
-	// newVif1 recompiler code cache area (8mb)
-	static const u32 VIF1recOffset = 0x06800000;
-
-	// microVU1 recompiler code cache area (64mb)
-	static const u32 mVU0recOffset = 0x07000000;
-
-	// microVU0 recompiler code cache area (64mb)
-	static const u32 mVU1recOffset = 0x0B000000;
-
-	// SSE-optimized VIF unpack functions (1mb)
-	static const u32 VIFUnpackRecOffset = 0x0F000000;
-
-	// Software Renderer JIT buffer (64mb)
-	static const u32 SWrecOffset = 0x0F100000;
-	static const u32 SWrecSize = 0x04000000;
+#ifdef __cplusplus
 }
-
-// --------------------------------------------------------------------------------------
-//  SysMainMemory
-// --------------------------------------------------------------------------------------
-// This class provides the main memory for the virtual machines.
-class SysMainMemory final
-{
-protected:
-	const VirtualMemoryManagerPtr m_mainMemory;
-	const VirtualMemoryManagerPtr m_codeMemory;
-
-	VirtualMemoryBumpAllocator m_bumpAllocator;
-
-	eeMemoryReserve m_ee;
-	iopMemoryReserve m_iop;
-	vuMemoryReserve m_vu;
-
-public:
-	SysMainMemory();
-	~SysMainMemory();
-
-	const VirtualMemoryManagerPtr& MainMemory() { return m_mainMemory; }
-	const VirtualMemoryManagerPtr& CodeMemory() { return m_codeMemory; }
-
-	VirtualMemoryBumpAllocator& BumpAllocator() { return m_bumpAllocator; }
-
-	const vuMemoryReserve& VUMemory() const { return m_vu; }
-
-	bool Allocate();
-	void Reset();
-	void Release();
-};
-
-extern SysMainMemory& GetVmMemory();
-
-#endif /* __cplusplus */
-
-extern void memBindConditionalHandlers(void);
+#endif
 
 static __fi void memRead128(u32 mem, mem128_t* out)        { r128_store(out, vtlb_memRead128(mem)); }
 #if PCSX2_MINGW_R128_BY_PTR
