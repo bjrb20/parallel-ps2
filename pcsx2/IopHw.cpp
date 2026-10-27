@@ -34,6 +34,8 @@ void psxHwReset(void) {
 
 	mdecInit(); // Initialize MDEC decoder
 	cdrReset();
+	/* Before the drive's reset, which closes the tray by it. */
+	g_SkipBiosHack = EmuConfig.UseBOOT2Injection;
 	cdvdReset();
 	psxRcntInit();
 	sio0.FullReset();

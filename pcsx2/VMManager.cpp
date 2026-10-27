@@ -31,6 +31,8 @@
 
 #include "Counters.h"
 #include "CDVD/CDVD.h"
+#include "CDVD/CDVD_host.h"
+#include "CDVD/cdvd_iso.h"
 #include "DEV9/DEV9.h"
 #include "Elfheader.h"
 #include "FW.h"
@@ -79,6 +81,13 @@
 // Example for romver 0160EC20010704
 // 20010704-160707,ROMconf,PS20160EC20010704.bin,kuma@rom-server/~/f10k/g/app/rom
 // 20010704-160707 can be used as unique ID for Bios
+/* Opens the CDVD source, with the gzip index settings of the moment. */
+static bool OpenCDVD(void)
+{
+	cdvd_iso_set_gz_index(EmuConfig.GzipIsoIndexTemplate, EmuFolders::DataRoot);
+	return DoCDVDopen();
+}
+
 static void SysGetBiosDiscID(char* out, size_t out_size)
 {
 	strlcpy(out, BiosSerial, out_size);
@@ -318,6 +327,17 @@ void VMManager::LoadSettings()
 		EmuConfig.GS.InterlaceMode = GSInterlaceMode::Off;
 	if (HasValidVM())
 		ApplyGameFixes();
+	cdvdApplySettings(EmuConfig.Speedhacks.fastCDVD);
+}
+
+void vm_game_starting_on_cpu_thread(void)
+{
+	VMManager::Internal::GameStartingOnCPUThread();
+}
+
+void vm_request_stop(void)
+{
+	VMManager::SetState(VMState::Stopping);
 }
 
 void VMManager::ApplyGameFixes()
@@ -536,16 +556,6 @@ bool VMManager::IsElfFileName(const std::string_view path)
 	return StringView::EndsWithNoCase(path, ".elf");
 }
 
-std::string VMManager::GetDiscOverrideFromGameSettings(const std::string& elf_path)
-{
-	std::string iso_path;
-	ElfObject elfo;
-	if (!elfo.OpenFile(elf_path))
-		return iso_path;
-
-	return iso_path;
-}
-
 bool VMManager::AutoDetectSource(const std::string& filename)
 {
 	if (!filename.empty())
@@ -558,18 +568,8 @@ bool VMManager::AutoDetectSource(const std::string& filename)
 
 		if (IsElfFileName(filename))
 		{
-			// alternative way of booting an elf, change the elf override, and (optionally) use the disc
-			// specified in the game settings.
-			std::string disc_path = GetDiscOverrideFromGameSettings(filename);
-			if (!disc_path.empty())
-			{
-				CDVDsys_SetFile(CDVD_SourceType::Iso, disc_path.c_str());
-				CDVDsys_ChangeSource(CDVD_SourceType::Iso);
-			}
-			else
-			{
-				CDVDsys_ChangeSource(CDVD_SourceType::NoDisc);
-			}
+			// alternative way of booting an elf: change the elf override, with no disc
+			CDVDsys_ChangeSource(CDVD_SourceType::NoDisc);
 
 			s_elf_override = filename;
 			return true;
@@ -665,7 +665,7 @@ bool VMManager::Initialize(VMBootParameters boot_params)
 
 	FileMcd_EmuOpen();
 
-	if (!DoCDVDopen())
+	if (!OpenCDVD())
 	{
 		/* Every failure below this point unwinds what it opened; this
 		 * one used to return with the memory cards still open and the
@@ -758,7 +758,7 @@ void VMManager::Shutdown()
 	MTGS::WaitGS(false);
 
 	{
-		LastELF.clear();
+		LastELF[0] = '\0';
 		DiscSerial[0] = '\0';
 		ElfCRC = 0;
 		ElfEntry = 0;
@@ -854,26 +854,27 @@ void VMManager::Reset()
 
 bool VMManager::ChangeDisc(CDVD_SourceType source, std::string path)
 {
+	/* What to go back to, taken before the change replaces it. */
+	const CDVD_SourceType old_type = CDVDsys_GetSourceType();
+	char old_path[PCSX2_PATH_MAX];
+	strlcpy(old_path, CDVDsys_GetFile(old_type), sizeof(old_path));
+
 	CDVDsys_ChangeSource(source);
 	if (!path.empty())
 		CDVDsys_SetFile(source, path.c_str());
 
-	const bool result = DoCDVDopen();
+	const bool result = OpenCDVD();
 	if (!result)
 	{
-		const CDVD_SourceType old_type = CDVDsys_GetSourceType();
-		char old_path[PCSX2_PATH_MAX];
-		strlcpy(old_path, CDVDsys_GetFile(old_type), sizeof(old_path));
-
 		/* Failed to open new disc image '{}'. Reverting to old image */
 		CDVDsys_ChangeSource(old_type);
 		if (old_path[0])
 			CDVDsys_SetFile(old_type, old_path);
-		if (!DoCDVDopen())
+		if (!OpenCDVD())
 		{
 			/* Failed to switch back to old disc image. Removing disc. */
 			CDVDsys_ChangeSource(CDVD_SourceType::NoDisc);
-			DoCDVDopen();
+			OpenCDVD();
 		}
 	}
 	cdvd.Tray.cdvdActionSeconds = 1;

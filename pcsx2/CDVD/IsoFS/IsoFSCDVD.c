@@ -13,9 +13,11 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#pragma once
+/* The filesystem's sectors come from the disc in the drive. C89. */
+#include "iso9660.h"
+#include "../CDVDcommon.h"
 
-#include "SectorSource.h"
-#include "IsoFileDescriptor.h"
-#include "IsoDirectory.h"
-#include "IsoFile.h"
+bool isofs_read_sector(u8* buffer, int lba)
+{
+	return DoCDVDreadSector(buffer, (u32)lba, CDVD_MODE_2048) >= 0;
+}

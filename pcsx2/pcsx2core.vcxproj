@@ -212,7 +212,7 @@
     <ClCompile Include="VMManager.cpp" />
     <ClCompile Include="Pcsx2Config.cpp" />
     <ClCompile Include="SaveState.cpp" />
-    <ClCompile Include="Elfheader.cpp" />
+    <ClCompile Include="Elfheader.c" />
     <ClCompile Include="x86\BaseblockEx.cpp" />
     <ClCompile Include="ps2\BiosTools.cpp" />
     <ClCompile Include="Counters.cpp" />
@@ -284,8 +284,8 @@
     <ClCompile Include="IopHw.cpp" />
     <ClCompile Include="ps2\Iop\IopHwRead.cpp" />
     <ClCompile Include="ps2\Iop\IopHwWrite.cpp" />
-    <ClCompile Include="CDVD\Ps1CD.cpp" />
-    <ClCompile Include="CDVD\CDVD.cpp" />
+    <ClCompile Include="CDVD\Ps1CD.c" />
+    <ClCompile Include="CDVD\CDVD.c" />
     <ClCompile Include="CDVD\CDVDnvram.c" />
     <ClCompile Include="CDVD\CDVDisoReader.c" />
     <ClCompile Include="CDVD\cdvd_reader.c" />
@@ -294,14 +294,13 @@
     <ClCompile Include="CDVD\cdvd_chd.c" />
     <ClCompile Include="CDVD\cdvd_gz.c" />
     <ClCompile Include="CDVD\cdvd_iso.c" />
-    <ClCompile Include="CDVD\CDVDcommon.cpp" />
+    <ClCompile Include="CDVD\CDVDcommon.c" />
     <ClCompile Include="GS.cpp" />
     <ClCompile Include="MTGS.cpp" />
     <ClCompile Include="x86\ix86-32\iCore-32.cpp" />
     <ClCompile Include="x86\iCore.cpp" />
-    <ClCompile Include="CDVD\IsoFS\IsoFile.cpp" />
-    <ClCompile Include="CDVD\IsoFS\IsoFS.cpp" />
-    <ClCompile Include="CDVD\IsoFS\IsoFSCDVD.cpp" />
+    <ClCompile Include="CDVD\IsoFS\iso9660.c" />
+    <ClCompile Include="CDVD\IsoFS\IsoFSCDVD.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CDVD\zlib_indexed.h" />
@@ -488,6 +487,7 @@
     <ClInclude Include="CDVD\Ps1CD.h" />
     <ClInclude Include="CDVD\CDVD.h" />
     <ClInclude Include="CDVD\CDVD_internal.h" />
+    <ClInclude Include="CDVD\CDVD_host.h" />
     <ClInclude Include="CDVD\CDVDcommon.h" />
     <ClInclude Include="GS.h" />
     <CustomBuildStep Include="rdebug\deci2.h">
@@ -508,11 +508,7 @@
     <ClInclude Include="ps2\BiosTools.h" />
     <ClInclude Include="MemoryTypes.h" />
     <ClInclude Include="x86\iCore.h" />
-    <ClInclude Include="CDVD\IsoFS\IsoDirectory.h" />
-    <ClInclude Include="CDVD\IsoFS\IsoFile.h" />
-    <ClInclude Include="CDVD\IsoFS\IsoFileDescriptor.h" />
-    <ClInclude Include="CDVD\IsoFS\IsoFS.h" />
-    <ClInclude Include="CDVD\IsoFS\SectorSource.h" />
+    <ClInclude Include="CDVD\IsoFS\iso9660.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\3rdparty\glad\glad.vcxproj">

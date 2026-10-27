@@ -211,7 +211,14 @@ typedef struct R3000Acpu {
 	void (*Shutdown)(void);
 } R3000Acpu;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+/* CDVD.c clears what DMA3 wrote through it */
 extern R3000Acpu *psxCpu;
+#ifdef __cplusplus
+}
+#endif
 extern R3000Acpu psxInt;
 extern R3000Acpu psxRec;
 

@@ -314,7 +314,7 @@
     <ClCompile Include="SaveState.cpp">
       <Filter>System</Filter>
     </ClCompile>
-    <ClCompile Include="Elfheader.cpp">
+    <ClCompile Include="Elfheader.c">
       <Filter>System\ISO</Filter>
     </ClCompile>
     <ClCompile Include="x86\BaseblockEx.cpp">
@@ -527,10 +527,10 @@
     <ClCompile Include="ps2\Iop\IopHwWrite.cpp">
       <Filter>System\Ps2\Iop\Hardware</Filter>
     </ClCompile>
-    <ClCompile Include="CDVD\Ps1CD.cpp">
+    <ClCompile Include="CDVD\Ps1CD.c">
       <Filter>System\Ps2\Iop\CDVD</Filter>
     </ClCompile>
-    <ClCompile Include="CDVD\CDVD.cpp">
+    <ClCompile Include="CDVD\CDVD.c">
       <Filter>System\Ps2\Iop\CDVD</Filter>
     </ClCompile>
     <ClCompile Include="CDVD\CDVDnvram.c">
@@ -557,7 +557,7 @@
     <ClCompile Include="CDVD\cdvd_iso.c">
       <Filter>System\Ps2\Iop\CDVD</Filter>
     </ClCompile>
-    <ClCompile Include="CDVD\CDVDcommon.cpp">
+    <ClCompile Include="CDVD\CDVDcommon.c">
       <Filter>System\Ps2\Iop\CDVD</Filter>
     </ClCompile>
     <ClCompile Include="IPU\IPU.cpp">
@@ -584,13 +584,10 @@
     <ClCompile Include="x86\iCore.cpp">
       <Filter>System\Ps2\iCore</Filter>
     </ClCompile>
-    <ClCompile Include="CDVD\IsoFS\IsoFile.cpp">
+    <ClCompile Include="CDVD\IsoFS\iso9660.c">
       <Filter>System\IsoFS</Filter>
     </ClCompile>
-    <ClCompile Include="CDVD\IsoFS\IsoFS.cpp">
-      <Filter>System\IsoFS</Filter>
-    </ClCompile>
-    <ClCompile Include="CDVD\IsoFS\IsoFSCDVD.cpp">
+    <ClCompile Include="CDVD\IsoFS\IsoFSCDVD.c">
       <Filter>System\IsoFS</Filter>
     </ClCompile>
     <ClCompile Include="GameDatabase.cpp">
@@ -1120,6 +1117,9 @@
     <ClInclude Include="CDVD\CDVD_internal.h">
       <Filter>System\Ps2\Iop\CDVD</Filter>
     </ClInclude>
+    <ClInclude Include="CDVD\CDVD_host.h">
+      <Filter>System\Ps2\Iop\CDVD</Filter>
+    </ClInclude>
     <ClInclude Include="CDVD\CDVDcommon.h">
       <Filter>System\Ps2\Iop\CDVD</Filter>
     </ClInclude>
@@ -1147,19 +1147,7 @@
     <ClInclude Include="x86\iCore.h">
       <Filter>System\Ps2\iCore</Filter>
     </ClInclude>
-    <ClInclude Include="CDVD\IsoFS\IsoDirectory.h">
-      <Filter>System\IsoFS</Filter>
-    </ClInclude>
-    <ClInclude Include="CDVD\IsoFS\IsoFile.h">
-      <Filter>System\IsoFS</Filter>
-    </ClInclude>
-    <ClInclude Include="CDVD\IsoFS\IsoFileDescriptor.h">
-      <Filter>System\IsoFS</Filter>
-    </ClInclude>
-    <ClInclude Include="CDVD\IsoFS\IsoFS.h">
-      <Filter>System\IsoFS</Filter>
-    </ClInclude>
-    <ClInclude Include="CDVD\IsoFS\SectorSource.h">
+    <ClInclude Include="CDVD\IsoFS\iso9660.h">
       <Filter>System\IsoFS</Filter>
     </ClInclude>
     <ClInclude Include="GameDatabase.h">

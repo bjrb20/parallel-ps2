@@ -117,6 +117,12 @@ SOURCES_C += \
 	$(LRPS2_DIR)/CDVD/cdvd_chd.c \
 	$(LRPS2_DIR)/CDVD/cdvd_gz.c \
 	$(LRPS2_DIR)/CDVD/cdvd_iso.c \
+	$(LRPS2_DIR)/CDVD/CDVD.c \
+	$(LRPS2_DIR)/CDVD/CDVDcommon.c \
+	$(LRPS2_DIR)/CDVD/Ps1CD.c \
+	$(LRPS2_DIR)/CDVD/IsoFS/iso9660.c \
+	$(LRPS2_DIR)/CDVD/IsoFS/IsoFSCDVD.c \
+	$(LRPS2_DIR)/Elfheader.c \
 	$(LRPS2_DIR)/NearPlace.c \
 	$(LRPS2_DIR)/Memory.c \
 	$(LRPS2_DIR)/VirtualMemory.c \
@@ -270,7 +276,6 @@ SOURCES_CXX += \
 	$(LRPS2_DIR)/COP0.cpp \
 	$(LRPS2_DIR)/Counters.cpp \
 	$(LRPS2_DIR)/Dmac.cpp \
-	$(LRPS2_DIR)/Elfheader.cpp \
 	$(LRPS2_DIR)/FiFo.cpp \
 	$(LRPS2_DIR)/FPU.cpp \
 	$(LRPS2_DIR)/FW.cpp \
@@ -325,15 +330,6 @@ SOURCES_CXX += \
 	$(LRPS2_DIR)/VUmicro.cpp \
 	$(LRPS2_DIR)/VUmicroMem.cpp \
 	$(LRPS2_DIR)/VUops.cpp
-
-# pcsx2/CDVD
-SOURCES_CXX += \
-	$(LRPS2_DIR)/CDVD/CDVD.cpp \
-	$(LRPS2_DIR)/CDVD/CDVDcommon.cpp \
-	$(LRPS2_DIR)/CDVD/Ps1CD.cpp \
-	$(LRPS2_DIR)/CDVD/IsoFS/IsoFile.cpp \
-	$(LRPS2_DIR)/CDVD/IsoFS/IsoFS.cpp \
-	$(LRPS2_DIR)/CDVD/IsoFS/IsoFSCDVD.cpp
 
 # pcsx2/Frontend
 SOURCES_CXX += \

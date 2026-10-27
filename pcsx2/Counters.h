@@ -93,6 +93,12 @@ extern "C" {
 #endif
 	extern s32 nextDeltaCounter;		// delta until the next counter event (must be signed)
 	extern u64 nextStartCounter;
+
+	extern void UpdateVSyncRate(bool force);
+	extern u32 GetVerticalFrequencyMilliHz(void);
+	/* Re-seeds the pre-init vsync rate once the disc region is known; a
+	 * no-op once the GS has a video mode. */
+	extern void rcntRefreshBootTiming(void);
 #ifdef __cplusplus
 }
 #endif
@@ -104,4 +110,3 @@ extern u32 rcntRcount(int index);
 extern bool rcntWrite32( u32 mem, mem32_t *value );
 extern u16 rcntRead32( u32 mem );		// returns u16 by design! (see implementation for details)
 
-extern void UpdateVSyncRate(bool force);

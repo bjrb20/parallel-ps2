@@ -1,4 +1,4 @@
-/* The mechacon NVRAM file (CDVD.cpp): loaded after each BIOS load, saved on
+/* The mechacon NVRAM file (CDVD.c): loaded after each BIOS load, saved on
  * shutdown. C, so Memory.c reaches it; CDVD.h includes this. */
 #pragma once
 

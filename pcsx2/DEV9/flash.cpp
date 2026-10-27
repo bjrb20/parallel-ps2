@@ -47,7 +47,7 @@ static bool file_dirty;
  * Android storage - and never wrote anything back at all. */
 static void FlashFilePath(char* out, size_t out_size)
 {
-	strlcpy(out, BiosPath.c_str(), out_size);
+	strlcpy(out, BiosPath, out_size);
 	path_remove_extension(out);
 	strlcat(out, ".flash", out_size);
 }

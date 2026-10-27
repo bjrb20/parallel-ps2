@@ -28,6 +28,7 @@
 #include "../pcsx2/SPU2/Global.h"
 #include "../pcsx2/ps2/BiosTools.h"
 #include "../pcsx2/CDVD/CDVD.h"
+#include "../pcsx2/CDVD/CDVD_host.h"
 #include "../pcsx2/USB/USB.h"
 #include "../pcsx2/USB/usb-eyetoy/eyetoy-frontend.h"
 #include "../pcsx2/DEV9/ATA/HddCreate.h"
@@ -85,6 +86,7 @@ static int         s_option_camera    = USB_CAMERA_NONE;
 static char        s_option_memcards[PCSX2_PATH_MAX];
 const Pcsx2Config& Host::OptionConfig() { return s_option_config; }
 bool               Host::OptionFastBoot() { return s_option_fast_boot; }
+bool               host_option_fast_boot(void) { return s_option_fast_boot; }
 const char*        Host::OptionMemcardPath() { return s_option_memcards; }
 
 bool pending_update_av_info = false;

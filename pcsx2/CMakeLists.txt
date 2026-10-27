@@ -100,7 +100,7 @@ set(pcsx2Sources
 	Dmac.cpp
 	GameDatabase.cpp
 	${CMAKE_CURRENT_BINARY_DIR}/GameDatabaseBuiltin.cpp
-	Elfheader.cpp
+	Elfheader.c
 	FW.cpp
 	FiFo.cpp
 	FPU.cpp
@@ -233,9 +233,9 @@ set(pcsx2Headers
 
 # CDVD sources
 set(pcsx2CDVDSources
-	CDVD/Ps1CD.cpp
-	CDVD/CDVDcommon.cpp
-	CDVD/CDVD.cpp
+	CDVD/Ps1CD.c
+	CDVD/CDVDcommon.c
+	CDVD/CDVD.c
 	CDVD/CDVDnvram.c
 	CDVD/CDVDisoReader.c
 	CDVD/cdvd_reader.c
@@ -244,9 +244,8 @@ set(pcsx2CDVDSources
 	CDVD/cdvd_chd.c
 	CDVD/cdvd_gz.c
 	CDVD/cdvd_iso.c
-	CDVD/IsoFS/IsoFile.cpp
-	CDVD/IsoFS/IsoFSCDVD.cpp
-	CDVD/IsoFS/IsoFS.cpp
+	CDVD/IsoFS/iso9660.c
+	CDVD/IsoFS/IsoFSCDVD.c
 	)
 
 # CDVD headers
@@ -256,11 +255,8 @@ set(pcsx2CDVDHeaders
 	CDVD/CDVD.h
 	CDVD/CDVDnvram.h
 	CDVD/CDVD_internal.h
-	CDVD/IsoFS/IsoDirectory.h
-	CDVD/IsoFS/IsoFileDescriptor.h
-	CDVD/IsoFS/IsoFile.h
-	CDVD/IsoFS/IsoFS.h
-	CDVD/IsoFS/SectorSource.h
+	CDVD/IsoFS/iso9660.h
+	CDVD/CDVD_host.h
 	CDVD/zlib_indexed.h
 	CDVD/cdvd_reader.h
 	CDVD/cdvd_iso.h

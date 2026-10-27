@@ -27,4 +27,10 @@
 
 static const u32 BIAS = 2;				// Bus is half of the actual ps2 speed
 static const u32 PS2CLK = 294912000;	//hz	/* 294.912 mhz */
+#ifdef __cplusplus
+extern "C" {
+#endif
 extern s64 PSXCLK;	/* 36.864 Mhz */
+#ifdef __cplusplus
+}
+#endif

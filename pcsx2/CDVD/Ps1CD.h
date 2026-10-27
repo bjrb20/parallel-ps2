@@ -17,13 +17,17 @@
 
 #include "CDVDcommon.h"
 
-// Not used.
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Not used. */
 typedef struct
 {
 	s32 y0, y1;
 } ADPCM_Decode_t;
 
-// Not used.
+/* Not used. */
 typedef struct
 {
 	s32 freq;
@@ -34,7 +38,7 @@ typedef struct
 	s16 pcm[16384];
 } xa_decode_t;
 
-struct cdrStruct
+typedef struct cdrStruct
 {
 	u8 OCUP;
 	u8 Reg1Mode;
@@ -77,18 +81,18 @@ struct cdrStruct
 
 	int Init;
 
-	u8 IrqMask; // psxdev: Added on initial psx work, not referenced since. Is it needed?
+	u8 IrqMask; /* psxdev: Added on initial psx work, not referenced since. Is it needed? */
 	u8 Irq;
 	u32 eCycle;
 
 	char Unused[4087];
-};
+} cdrStruct;
 
 extern cdrStruct cdr;
 
-void cdrReset();
-void cdrInterrupt();
-void cdrReadInterrupt();
+void cdrReset(void);
+void cdrInterrupt(void);
+void cdrReadInterrupt(void);
 u8 cdrRead0(void);
 u8 cdrRead1(void);
 u8 cdrRead2(void);
@@ -98,3 +102,7 @@ void cdrWrite0(u8 rt);
 void cdrWrite1(u8 rt);
 void cdrWrite2(u8 rt);
 void cdrWrite3(u8 rt);
+
+#ifdef __cplusplus
+}
+#endif

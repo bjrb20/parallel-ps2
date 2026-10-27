@@ -24,7 +24,10 @@
 #include "GSmmio.h"
 
 extern double GetVerticalFrequency();
-extern u32 GetVerticalFrequencyMilliHz();
+#ifdef __cplusplus
+extern "C"
+#endif
+u32 GetVerticalFrequencyMilliHz(void);
 
 enum CSR_FifoState
 {

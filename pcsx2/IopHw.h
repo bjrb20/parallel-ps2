@@ -307,16 +307,16 @@ typedef enum IopEventId
 	IopEvt_USB,
 } IopEventId;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 extern void PSX_INT( IopEventId n, s32 ecycle);
 extern int psxRemainingCycles(IopEventId n);
 
 extern void psxSetNextBranch( u32 startCycle, s32 delta );
 extern void psxSetNextBranchDelta( s32 delta );
 
-extern void psxHwReset();
-#ifdef __cplusplus
-extern "C" {
-#endif
+extern void psxHwReset(void);
 extern u8   psxHw4Read8 (u32 add);
 extern void psxHw4Write8(u32 add, u8  value);
 extern void psxDmaInterrupt(int n);

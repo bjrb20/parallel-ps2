@@ -107,7 +107,7 @@ void cpuReset()
 	// the same (identical ELF names) but is actually different (devs actually could
 	// run into this while testing minor binary hacked changes to ISO images, which
 	// is why I found out about this) --air
-	LastELF.clear();
+	LastELF[0] = '\0';
 
 	g_eeloadMain = 0, g_eeloadExec = 0, g_osdsys_str = 0;
 }
@@ -572,11 +572,16 @@ void eeloadHook(void)
 	const std::string& elf_override(VMManager::Internal::GetElfOverride());
 
 	if (!elf_override.empty())
-		cdvdReloadElfInfo(FormatString::Format("host:%s", elf_override.c_str()));
+		cdvdReloadElfInfo(FormatString::Format("host:%s", elf_override.c_str()).c_str());
 	else
-		cdvdReloadElfInfo();
+		cdvdReloadElfInfo(NULL);
 
-	int disctype = GetPS2ElfName(discelf);
+	int disctype;
+	{
+		char name[PCSX2_PATH_MAX];
+		disctype = GetPS2ElfName(name, sizeof(name));
+		discelf  = name;
+	}
 	int argc     = cpuRegs.GPR.n.a0.SD[0];
 	if (argc) // calls to EELOAD *after* the first one during the startup process will come here
 	{

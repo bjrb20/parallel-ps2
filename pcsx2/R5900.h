@@ -26,7 +26,6 @@
 // them in iR5900.h would mean having to include that into more files than I care to
 // right now, so we're sticking them here for now until a better solution comes along.
 
-extern bool g_SkipBiosHack;
 /* MSVC decorates C++ data symbols; the ELF ABI does not. A variable a C
  * unit references therefore has to be declared -- and so, through this
  * header, defined -- with C language linkage, or the Windows link fails
@@ -36,6 +35,7 @@ extern "C" {
 #endif
 	extern bool g_GameStarted;
 	extern bool g_GameLoading;
+	extern bool g_SkipBiosHack;
 
 	extern s32 EEsCycle;
 	extern u64 EEoCycle;

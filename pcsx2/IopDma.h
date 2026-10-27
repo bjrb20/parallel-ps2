@@ -18,7 +18,6 @@
 #include "common/Pcsx2Types.h"
 
 extern void psxDma2(u32 madr, u32 bcr, u32 chcr);
-extern void psxDma3(u32 madr, u32 bcr, u32 chcr);
 extern void psxDma6(u32 madr, u32 bcr, u32 chcr);
 extern void psxDma4(u32 madr, u32 bcr, u32 chcr);
 extern void psxDma7(u32 madr, u32 bcr, u32 chcr);
@@ -42,5 +41,13 @@ extern void spu2Irq(void);
 }
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 extern void iopIntcIrq( uint irqType );
-extern void iopTestIntc();
+/* Ps1CD.c */
+extern void psxDma3(u32 madr, u32 bcr, u32 chcr);
+extern void iopTestIntc(void);
+#ifdef __cplusplus
+}
+#endif

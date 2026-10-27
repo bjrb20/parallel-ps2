@@ -57,7 +57,7 @@ bool AllowParams2;
 /* Bounded: the ROM version block these come from is fixed-size. */
 char BiosDescription[BIOS_DESCRIPTION_MAX];
 char BiosSerial[BIOS_SERIAL_MAX];
-std::string BiosPath;
+char BiosPath[PCSX2_PATH_MAX];
 BiosDebugInformation CurrentBiosInformation;
 
 static bool LoadBiosVersion(RFILE *fp, u32 *version, char *description, size_t description_size, u32 *region, char *zone, size_t zone_size, char *serial, size_t serial_size)
@@ -197,18 +197,18 @@ template <size_t _size>
 static void LoadExtraRom(const char* ext, u8 (&dest)[_size])
 {
 	// Try first a basic extension concatenation (normally results in something like name.bin.rom1)
-	std::string Bios1(FormatString::Format("%s.%s", BiosPath.c_str(), ext));
+	std::string Bios1(FormatString::Format("%s.%s", BiosPath, ext));
 
 	s64 filesize;
 	if ((filesize = path_get_size(Bios1.c_str())) <= 0)
 	{
 		// Try the name properly extensioned next (name.rom1)
-		if (strrchr(BiosPath.c_str(), '.'))
+		if (strrchr(BiosPath, '.'))
 		{
 			/* The name's own extension, if it has one, gives way to ext. */
-			const char* full = BiosPath.c_str();
+			const char* full = BiosPath;
 			const char* dot  = strrchr(path_basename(full), '.');
-			Bios1.assign(full, dot ? (size_t)(dot - full) : BiosPath.size());
+			Bios1.assign(full, dot ? (size_t)(dot - full) : strlen(BiosPath));
 			Bios1 += '.';
 			Bios1 += ext;
 		}
@@ -335,7 +335,7 @@ bool LoadBIOS(void)
 
 	BiosChecksum = 0;
 	ChecksumIt(BiosChecksum, eeMem->ROM);
-	BiosPath = std::move(path);
+	strlcpy(BiosPath, path, PCSX2_PATH_MAX);
 
 	LoadExtraRom("rom1", eeMem->ROM1);
 	LoadExtraRom("rom2", eeMem->ROM2);

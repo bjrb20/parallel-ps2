@@ -1051,3 +1051,16 @@ bool rcntFreeze(SaveStateBase *s)
 
 	return SaveState_IsOkay(s);
 }
+
+/* Re-seed the pre-init counter timing once the disc region is known.
+ * VMManager::Initialize computes the first vsync rate before the CDVD
+ * reset path parses SYSTEM.CNF, so a PAL disc fast-booted on an NTSC
+ * BIOS would otherwise keep the NTSC seed until SetGsCrt.  The rate
+ * change guard inside UpdateVSyncRate makes this a no-op whenever the
+ * seed did not actually move, and once SetGsCrt has run the video mode
+ * is no longer Uninitialized and the seed is irrelevant. */
+void rcntRefreshBootTiming(void)
+{
+	if (gsVideoMode == GS_VideoMode::Uninitialized)
+		UpdateVSyncRate(false);
+}

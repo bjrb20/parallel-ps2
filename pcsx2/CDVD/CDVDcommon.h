@@ -170,6 +170,9 @@ extern s32 DoCDVDgetBuffer(u8* buffer);
 extern s32 DoCDVDdetectDiskType(void);
 extern void DoCDVDresetDiskTypeCache(void);
 
+/* The source of the disc. C++ sees an enum class over a byte; C sees the
+ * byte and the same values. Either way the functions taking one are the
+ * same functions, of C linkage. */
 #ifdef __cplusplus
 }
 
@@ -180,8 +183,20 @@ enum class CDVD_SourceType : uint8_t
 	NoDisc, /* use built in CDVDnull */
 };
 
+extern "C" {
+#else
+typedef u8 CDVD_SourceType;
+#endif
+
+#define CDVD_SOURCE_ISO    0
+#define CDVD_SOURCE_DISC   1
+#define CDVD_SOURCE_NODISC 2
+
 extern void CDVDsys_ChangeSource(CDVD_SourceType type);
 extern void CDVDsys_SetFile(CDVD_SourceType srctype, const char* newfile);
 extern const char* CDVDsys_GetFile(CDVD_SourceType srctype);
 extern CDVD_SourceType CDVDsys_GetSourceType(void);
+
+#ifdef __cplusplus
+}
 #endif

@@ -15,19 +15,18 @@
 
 #pragma once
 
+#include <retro_inline.h>
 #include "CDVDcommon.h"
 #include "CDVDnvram.h"
 
 #ifdef __cplusplus
-#include <string>
-
 extern "C" {
 #endif
 
 #define btoi(b) ((b) / 16 * 10 + (b) % 16) /* BCD to u_char */
 #define itob(i) ((i) / 10 * 16 + (i) % 10) /* u_char to BCD */
 
-static __fi s32 msf_to_lsn(const u8* Time)
+static INLINE s32 msf_to_lsn(const u8* Time)
 {
 	u32 lsn = Time[2];
 	lsn += (Time[1] - 2) * 75;
@@ -35,7 +34,7 @@ static __fi s32 msf_to_lsn(const u8* Time)
 	return lsn;
 }
 
-static __fi void lsn_to_msf(u8* Time, s32 lsn)
+static INLINE void lsn_to_msf(u8* Time, s32 lsn)
 {
 	u8 m, s, f;
 
@@ -49,7 +48,7 @@ static __fi void lsn_to_msf(u8* Time, s32 lsn)
 	Time[2] = itob(f);
 }
 
-static __fi void lba_to_msf(s32 lba, u8* m, u8* s, u8* f)
+static INLINE void lba_to_msf(s32 lba, u8* m, u8* s, u8* f)
 {
 	lba += 150;
 	*m = lba / (60 * 75);
@@ -172,6 +171,14 @@ extern void cdvdWrite(u8 key, u8 rt);
 
 extern s32 cdvdCtrlTrayOpen(void);
 extern s32 cdvdCtrlTrayClose(void);
+/* The settings the drive reads, from EmuConfig whenever it is rebuilt. */
+extern void cdvdApplySettings(bool fast_cdvd);
+/* The disc's boot ELF from SYSTEM.CNF into name (size bytes): 2 a PS2
+ * disc (BOOT2), 1 a PS1 disc (BOOT), 0 none. */
+extern int GetPS2ElfName(char* name, size_t size);
+/* Re-reads the disc's serial and ELF CRC; elfoverride, when not NULL or
+ * empty, names the ELF to take the CRC of instead. */
+extern void cdvdReloadElfInfo(const char* elfoverride);
 /* -1 unknown, 0 NTSC, 1 PAL; from SYSTEM.CNF VMODE of the last parsed disc. */
 int cdvdGetDiscRegion(void);
 
@@ -179,7 +186,4 @@ extern char DiscSerial[];
 
 #ifdef __cplusplus
 }
-
-extern void cdvdReloadElfInfo(std::string elfoverride = std::string());
-int GetPS2ElfName( std::string& name );
 #endif
