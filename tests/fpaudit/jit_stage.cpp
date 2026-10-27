@@ -30,8 +30,11 @@ typedef uint64_t u64;
 /* Bring in the C89 emitter core standalone. */
 #include "common/Pcsx2Defs.h"
 #include "emitter/x86types.h"
-/* x86types.h declares the thread-local cursor; define it here. */
 #include "emitter/c89ops.h"
+
+/* x86types.h declares the thread-local cursor; the core defines it in
+ * iCore.cpp, which this harness does not link, so define it here. */
+thread_local u8* x86Ptr PCSX2_TLS_INITIAL_EXEC = NULL;
 
 alignas(16) static u32 glob_signbit[4] = {0x80000000u,0x80000000u,0x80000000u,0x80000000u};
 alignas(16) static u32 glob_kff[4]     = {0xffu,0xffu,0xffu,0xffu};
