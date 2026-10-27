@@ -14,6 +14,7 @@
  */
 
 #include <ctype.h>
+#include <time.h> /* localtime */
 #include "common/Pcsx2Defs.h"
 #include <string.h>
 #include <iterator>
