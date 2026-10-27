@@ -505,7 +505,12 @@ bool GSTexture12::Map(GSMap& m, const GSVector4i* r, int layer)
 	{
 		dev->ExecuteCommandList(false);
 		if (!buffer.ReserveMemory(required_size, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT))
+		{
+			/* Nothing is reserved at the host pointer: the caller falls
+			 * back to Update() rather than writing there. */
 			GSDevice12::ReportRecurring("Reserving texture upload memory", E_OUTOFMEMORY);
+			return false;
+		}
 	}
 
 	m.bits = static_cast<u8*>(buffer.GetCurrentHostPointer());
