@@ -47,6 +47,7 @@ class D3D12ShaderCache
 		~D3D12ShaderCache();
 
 		__fi D3D_FEATURE_LEVEL GetFeatureLevel() const { return m_feature_level; }
+		__fi bool IsDebug() const { return m_debug; }
 
 		bool Open(D3D_FEATURE_LEVEL feature_level, bool debug);
 		void Close();
@@ -106,6 +107,47 @@ class D3D12ShaderCache
 			bool operator!=(const CacheIndexKey& key) const;
 		};
 
+		/* What the warm-up thread reads the cache through: a copy of the
+		 * index as it stood when it was taken, sorted, and handles of its
+		 * own on the blob files. The drawing thread goes on appending to
+		 * those files; the bytes the copy names are never rewritten. */
+		struct SnapshotEntry
+		{
+			CacheIndexKey key;
+			u32 file_offset;
+			u32 blob_size;
+		};
+		struct Snapshot
+		{
+			SnapshotEntry* shaders;
+			SnapshotEntry* pipelines;
+			size_t num_shaders;
+			size_t num_pipelines;
+			RFILE* shader_blob_file;
+			RFILE* pipeline_blob_file;
+		};
+
+		/* The drawing thread, with the cache open. False when the cache is
+		 * off; the snapshot is then empty and reads find nothing. */
+		bool OpenSnapshot(Snapshot* snap) const;
+		/* The warm-up thread: the blob for @key, or null. */
+		static ComPtr<ID3DBlob> ReadSnapshot(Snapshot* snap, const CacheIndexKey& key);
+		static void CloseSnapshot(Snapshot* snap);
+
+		/* Blobs built elsewhere (the warm-up thread), added when the cache
+		 * does not have them yet. The drawing thread. */
+		void AddShaderBlobIfMissing(const CacheIndexKey& key, ID3DBlob* blob);
+		void AddPipelineBlobIfMissing(const CacheIndexKey& key, ID3DBlob* blob);
+
+		/* Where the list of pipelines drawn with is kept, beside the
+		 * cache; empty when the cache is off. */
+		std::string GetPipelineListFileName() const;
+
+		static CacheIndexKey GetShaderCacheKey(EntryType type, const std::string_view& shader_code, const D3D_SHADER_MACRO* macros, const char* entry_point);
+		static CacheIndexKey GetShaderCacheKey(EntryType type, const char *shader_code, size_t shader_len, const D3D_SHADER_MACRO* macros, const char* entry_point);
+		static CacheIndexKey GetPipelineCacheKey(const D3D12_GRAPHICS_PIPELINE_STATE_DESC& gpdesc);
+		static CacheIndexKey GetPipelineCacheKey(const D3D12_COMPUTE_PIPELINE_STATE_DESC& gpdesc);
+
 		struct CacheIndexEntryHasher
 		{
 			std::size_t operator()(const CacheIndexKey& e) const noexcept
@@ -130,11 +172,6 @@ class D3D12ShaderCache
 
 		static std::string GetCacheBaseFileName(const std::string_view& type,
 				D3D_FEATURE_LEVEL feature_level, bool debug);
-		static CacheIndexKey GetShaderCacheKey(EntryType type, const std::string_view& shader_code, const D3D_SHADER_MACRO* macros, const char* entry_point);
-		static CacheIndexKey GetShaderCacheKey(EntryType type, const char *shader_code, size_t shader_len, const D3D_SHADER_MACRO* macros, const char* entry_point);
-		static CacheIndexKey GetPipelineCacheKey(const D3D12_GRAPHICS_PIPELINE_STATE_DESC& gpdesc);
-		static CacheIndexKey GetPipelineCacheKey(const D3D12_COMPUTE_PIPELINE_STATE_DESC& gpdesc);
-
 		bool CreateNew(const std::string& index_filename, const std::string& blob_filename, RFILE*& index_file,
 				RFILE*& blob_file);
 		bool ReadExisting(const std::string& index_filename, const std::string& blob_filename, RFILE*& index_file,
@@ -148,6 +185,8 @@ class D3D12ShaderCache
 		ComPtr<ID3D12PipelineState> CompileAndAddPipeline(ID3D12Device* device, const CacheIndexKey& key,
 				const D3D12_COMPUTE_PIPELINE_STATE_DESC& gpdesc);
 		bool AddPipelineToBlob(const CacheIndexKey& key, ID3D12PipelineState* pso);
+		bool AppendBlob(RFILE* index_file, RFILE* blob_file, CacheIndex& index,
+				const CacheIndexKey& key, const void* data, u32 size);
 
 		RFILE* m_shader_index_file = nullptr;
 		RFILE* m_shader_blob_file = nullptr;

@@ -68,6 +68,9 @@ namespace D3D12
 
 		~GraphicsPipelineBuilder() = default;
 
+		/* (its input layout points into the builder: valid while it is) */
+		__fi const D3D12_GRAPHICS_PIPELINE_STATE_DESC& GetDesc() const { return m_desc; }
+
 		void Clear();
 
 		wil::com_ptr_nothrow<ID3D12PipelineState> Create(ID3D12Device* device, bool clear = true);

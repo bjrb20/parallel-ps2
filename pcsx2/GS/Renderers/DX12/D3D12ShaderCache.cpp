@@ -554,41 +554,8 @@ D3D12ShaderCache::ComPtr<ID3DBlob> D3D12ShaderCache::CompileAndAddShaderBlob(con
 	if (!blob)
 		return {};
 
-	if (!m_shader_blob_file || filestream_seek(m_shader_blob_file, 0, RETRO_VFS_SEEK_POSITION_END) != 0)
-		return blob;
-
-	CacheIndexData data;
-	data.file_offset = static_cast<u32>(filestream_tell(m_shader_blob_file));
-	data.blob_size = static_cast<u32>(blob->GetBufferSize());
-
-	CacheIndexEntry entry = {};
-	entry.source_hash_low = key.source_hash_low;
-	entry.source_hash_high = key.source_hash_high;
-	entry.macro_hash_low = key.macro_hash_low;
-	entry.macro_hash_high = key.macro_hash_high;
-	entry.entry_point_low = key.entry_point_low;
-	entry.entry_point_high = key.entry_point_high;
-	entry.source_length = key.source_length;
-	entry.shader_type = static_cast<u32>(key.type);
-	entry.blob_size = data.blob_size;
-	entry.file_offset = data.file_offset;
-
-	/* The index was read to its end when the cache was opened, and a
-	 * stream open for update must not be written straight after a read
-	 * without a seek in between -- the offset the write lands at is
-	 * otherwise undefined. Only the second launch ever saw it: the
-	 * first takes the write-only create path. */
-	if (filestream_seek(m_shader_index_file, 0, RETRO_VFS_SEEK_POSITION_END) != 0)
-		return blob;
-	if (filestream_write(m_shader_blob_file, blob->GetBufferPointer(), entry.blob_size) != (int64_t)entry.blob_size ||
-		filestream_flush(m_shader_blob_file) != 0 || filestream_write(m_shader_index_file, &entry, sizeof(entry)) != (int64_t)(sizeof(entry)) ||
-		filestream_flush(m_shader_index_file) != 0)
-	{
-		log_cb(RETRO_LOG_ERROR, "Failed to write shader blob to file\n");
-		return blob;
-	}
-
-	m_shader_index.emplace(key, data);
+	AppendBlob(m_shader_index_file, m_shader_blob_file, m_shader_index, key,
+			blob->GetBufferPointer(), static_cast<u32>(blob->GetBufferSize()));
 	return blob;
 }
 
@@ -626,44 +593,167 @@ D3D12ShaderCache::CompileAndAddPipeline(ID3D12Device* device, const CacheIndexKe
 
 bool D3D12ShaderCache::AddPipelineToBlob(const CacheIndexKey& key, ID3D12PipelineState* pso)
 {
-	if (!m_pipeline_blob_file || filestream_seek(m_pipeline_blob_file, 0, RETRO_VFS_SEEK_POSITION_END) != 0)
-		return false;
-
 	ComPtr<ID3DBlob> blob;
-	HRESULT hr = pso->GetCachedBlob(blob.put());
+	HRESULT hr;
+
+	if (!m_pipeline_blob_file)
+		return false;
+	hr = pso->GetCachedBlob(blob.put());
 	if (FAILED(hr))
 	{
 		log_cb(RETRO_LOG_WARN, "Failed to get cached PSO data: %08X\n", hr);
 		return false;
 	}
+	return AppendBlob(m_pipeline_index_file, m_pipeline_blob_file, m_pipeline_index, key,
+			blob->GetBufferPointer(), static_cast<u32>(blob->GetBufferSize()));
+}
 
-	CacheIndexData data;
-	data.file_offset = static_cast<u32>(filestream_tell(m_pipeline_blob_file));
-	data.blob_size = static_cast<u32>(blob->GetBufferSize());
+/* The blob, then its entry: an entry is only ever written once the bytes
+ * it names are on disk, which a snapshot taken meanwhile relies on. */
+bool D3D12ShaderCache::AppendBlob(RFILE* index_file, RFILE* blob_file, CacheIndex& index,
+	const CacheIndexKey& key, const void* data, u32 size)
+{
+	CacheIndexData   d;
+	CacheIndexEntry  entry = {};
 
-	CacheIndexEntry entry = {};
-	entry.source_hash_low = key.source_hash_low;
+	if (!index_file || !blob_file || filestream_seek(blob_file, 0, RETRO_VFS_SEEK_POSITION_END) != 0)
+		return false;
+
+	d.file_offset = static_cast<u32>(filestream_tell(blob_file));
+	d.blob_size   = size;
+
+	entry.source_hash_low  = key.source_hash_low;
 	entry.source_hash_high = key.source_hash_high;
-	entry.source_length = key.source_length;
-	entry.shader_type = static_cast<u32>(key.type);
-	entry.blob_size = data.blob_size;
-	entry.file_offset = data.file_offset;
+	entry.macro_hash_low   = key.macro_hash_low;
+	entry.macro_hash_high  = key.macro_hash_high;
+	entry.entry_point_low  = key.entry_point_low;
+	entry.entry_point_high = key.entry_point_high;
+	entry.source_length    = key.source_length;
+	entry.shader_type      = static_cast<u32>(key.type);
+	entry.blob_size        = d.blob_size;
+	entry.file_offset      = d.file_offset;
 
 	/* The index was read to its end when the cache was opened, and a
 	 * stream open for update must not be written straight after a read
 	 * without a seek in between -- the offset the write lands at is
-	 * otherwise undefined. Only the second launch ever saw it: the
-	 * first takes the write-only create path. */
-	if (filestream_seek(m_pipeline_index_file, 0, RETRO_VFS_SEEK_POSITION_END) != 0)
+	 * otherwise undefined. */
+	if (filestream_seek(index_file, 0, RETRO_VFS_SEEK_POSITION_END) != 0)
 		return false;
-	if (filestream_write(m_pipeline_blob_file, blob->GetBufferPointer(), entry.blob_size) != (int64_t)entry.blob_size ||
-		filestream_flush(m_pipeline_blob_file) != 0 || filestream_write(m_pipeline_index_file, &entry, sizeof(entry)) != (int64_t)(sizeof(entry)) ||
-		filestream_flush(m_pipeline_index_file) != 0)
+	if (filestream_write(blob_file, data, size) != (int64_t)size ||
+		filestream_flush(blob_file) != 0 || filestream_write(index_file, &entry, sizeof(entry)) != (int64_t)(sizeof(entry)) ||
+		filestream_flush(index_file) != 0)
 	{
-		log_cb(RETRO_LOG_ERROR, "Failed to write pipeline blob to file\n");
+		log_cb(RETRO_LOG_ERROR, "Failed to write blob to the cache\n");
 		return false;
 	}
 
-	m_shader_index.emplace(key, data);
+	index.emplace(key, d);
 	return true;
+}
+
+void D3D12ShaderCache::AddShaderBlobIfMissing(const CacheIndexKey& key, ID3DBlob* blob)
+{
+	if (blob && m_shader_index.find(key) == m_shader_index.end())
+		AppendBlob(m_shader_index_file, m_shader_blob_file, m_shader_index, key,
+				blob->GetBufferPointer(), static_cast<u32>(blob->GetBufferSize()));
+}
+
+void D3D12ShaderCache::AddPipelineBlobIfMissing(const CacheIndexKey& key, ID3DBlob* blob)
+{
+	if (blob && m_pipeline_index.find(key) == m_pipeline_index.end())
+		AppendBlob(m_pipeline_index_file, m_pipeline_blob_file, m_pipeline_index, key,
+				blob->GetBufferPointer(), static_cast<u32>(blob->GetBufferSize()));
+}
+
+std::string D3D12ShaderCache::GetPipelineListFileName() const
+{
+	if (GSConfig.DisableShaderCache)
+		return std::string();
+	return GetCacheBaseFileName("pipelinelist", m_feature_level, m_debug) + ".bin";
+}
+
+/* ---- the warm-up thread's view of the cache ---- */
+
+static_assert(sizeof(D3D12ShaderCache::CacheIndexKey) == 56, "keys are compared as bytes: no padding");
+
+static int D3D12ShaderCache_CompareEntries(const void* a, const void* b)
+{
+	return memcmp(a, b, sizeof(D3D12ShaderCache::CacheIndexKey));
+}
+
+bool D3D12ShaderCache::OpenSnapshot(Snapshot* snap) const
+{
+	size_t i;
+
+	memset(snap, 0, sizeof(*snap));
+	if (GSConfig.DisableShaderCache || !m_shader_blob_file)
+		return false;
+
+	if (!m_shader_index.empty() &&
+		(snap->shaders = (SnapshotEntry*)malloc(m_shader_index.size() * sizeof(SnapshotEntry))))
+	{
+		i = 0;
+		for (const auto& it : m_shader_index)
+		{
+			snap->shaders[i].key         = it.first;
+			snap->shaders[i].file_offset = it.second.file_offset;
+			snap->shaders[i].blob_size   = it.second.blob_size;
+			i++;
+		}
+		snap->num_shaders = i;
+		qsort(snap->shaders, snap->num_shaders, sizeof(SnapshotEntry), D3D12ShaderCache_CompareEntries);
+		snap->shader_blob_file = filestream_open(
+			(GetCacheBaseFileName("shaders", m_feature_level, m_debug) + ".bin").c_str(),
+			RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+	}
+	if (!m_pipeline_index.empty() &&
+		(snap->pipelines = (SnapshotEntry*)malloc(m_pipeline_index.size() * sizeof(SnapshotEntry))))
+	{
+		i = 0;
+		for (const auto& it : m_pipeline_index)
+		{
+			snap->pipelines[i].key         = it.first;
+			snap->pipelines[i].file_offset = it.second.file_offset;
+			snap->pipelines[i].blob_size   = it.second.blob_size;
+			i++;
+		}
+		snap->num_pipelines = i;
+		qsort(snap->pipelines, snap->num_pipelines, sizeof(SnapshotEntry), D3D12ShaderCache_CompareEntries);
+		snap->pipeline_blob_file = filestream_open(
+			(GetCacheBaseFileName("pipelines", m_feature_level, m_debug) + ".bin").c_str(),
+			RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+	}
+	return true;
+}
+
+D3D12ShaderCache::ComPtr<ID3DBlob> D3D12ShaderCache::ReadSnapshot(Snapshot* snap, const CacheIndexKey& key)
+{
+	const bool           pipeline = key.type == EntryType::GraphicsPipeline || key.type == EntryType::ComputePipeline;
+	const SnapshotEntry* entries  = pipeline ? snap->pipelines : snap->shaders;
+	const size_t         n        = pipeline ? snap->num_pipelines : snap->num_shaders;
+	RFILE*               file     = pipeline ? snap->pipeline_blob_file : snap->shader_blob_file;
+	const SnapshotEntry* e;
+	ComPtr<ID3DBlob>     blob;
+
+	if (!entries || !file)
+		return {};
+	/* (the key is the first member of an entry) */
+	e = (const SnapshotEntry*)bsearch(&key, entries, n, sizeof(SnapshotEntry), D3D12ShaderCache_CompareEntries);
+	if (!e || FAILED(D3DCreateBlob(e->blob_size, blob.put())))
+		return {};
+	if (filestream_seek(file, e->file_offset, RETRO_VFS_SEEK_POSITION_START) != 0 ||
+		filestream_read(file, blob->GetBufferPointer(), e->blob_size) != (int64_t)e->blob_size)
+		return {};
+	return blob;
+}
+
+void D3D12ShaderCache::CloseSnapshot(Snapshot* snap)
+{
+	if (snap->shader_blob_file)
+		filestream_close(snap->shader_blob_file);
+	if (snap->pipeline_blob_file)
+		filestream_close(snap->pipeline_blob_file);
+	free(snap->shaders);
+	free(snap->pipelines);
+	memset(snap, 0, sizeof(*snap));
 }

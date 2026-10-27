@@ -38,9 +38,11 @@
 #include "common/RedtapeWilCom.h"
 
 struct IDXGIAdapter;
+namespace D3D12 { class GraphicsPipelineBuilder; }
 struct IDXGIFactory;
 
 #include "GSD3D12Heap.h"
+#include "GSD3D12Warm.h"
 
 class GSDevice12 final : public GSDevice
 {
@@ -196,12 +198,37 @@ private:
 
 	std::unordered_map<u32, ComPtr<ID3DBlob>> m_tfx_vertex_shaders;
 	std::unordered_map<GSHWDrawConfig::PSSelector, ComPtr<ID3DBlob>, GSHWDrawConfig::PSSelectorHash> m_tfx_pixel_shaders;
-	std::unordered_map<PipelineSelector, ComPtr<ID3D12PipelineState>, PipelineSelectorHash> m_tfx_pipelines;
+	typedef std::unordered_map<PipelineSelector, ComPtr<ID3D12PipelineState>, PipelineSelectorHash> TFXPipelineMap;
+	TFXPipelineMap m_tfx_pipelines;
 	/* The draws of one frame come in runs that share a pipeline, and the
 	 * hash of a selector costs more than the comparison: remember the
 	 * last one and skip the map while the selector has not changed. */
 	PipelineSelector m_last_tfx_pipeline_selector;
 	const ID3D12PipelineState* m_last_tfx_pipeline = nullptr;
+
+	/* The draw pipelines a session made, kept beside the shader cache, and
+	 * built again at the next start on a thread of their own (see
+	 * GSD3D12Warm.h). A result of that thread: the pipeline, and what it
+	 * built that the cache had not (null when it had), for the cache. */
+	struct TFXWarmResult
+	{
+		D3D12ShaderCache::CacheIndexKey vs_key;
+		D3D12ShaderCache::CacheIndexKey ps_key;
+		D3D12ShaderCache::CacheIndexKey pso_key;
+		ID3D12PipelineState* pso;
+		ID3DBlob* vs_blob;
+		ID3DBlob* ps_blob;
+		ID3DBlob* pso_blob;
+		PipelineSelector p;
+	};
+	gs_warm_list_t m_tfx_list = {nullptr, sizeof(PipelineSelector), 0, 0};
+	size_t m_tfx_list_loaded = 0;
+	gs_warm_t* m_tfx_warm = nullptr;
+	D3D12ShaderCache::Snapshot m_tfx_warm_cache = {};
+	/* the blobs the warm-up thread built, added to the cache at teardown */
+	TFXWarmResult* m_tfx_warm_blobs = nullptr;
+	size_t m_tfx_warm_blob_count = 0;
+	size_t m_tfx_warm_blob_cap = 0;
 
 	GSHWDrawConfig::VSConstantBuffer m_vs_cb_cache;
 	GSHWDrawConfig::PSConstantBuffer m_ps_cb_cache;
@@ -225,6 +252,14 @@ private:
 	const ID3DBlob* GetTFXPixelShader(const GSHWDrawConfig::PSSelector& sel);
 	ComPtr<ID3D12PipelineState> CreateTFXPipeline(const PipelineSelector& p);
 	const ID3D12PipelineState* GetTFXPipeline(const PipelineSelector& p);
+	__noinline TFXPipelineMap::iterator AddMissingTFXPipeline(const PipelineSelector& p);
+	void FillTFXPipeline(D3D12::GraphicsPipelineBuilder& gpb, const PipelineSelector& p,
+		const ID3DBlob* vs, const ID3DBlob* ps) const;
+	void StartTFXWarm();
+	void StopTFXWarm();
+	bool CollectWarmedTFXPipelines(const PipelineSelector* want, TFXPipelineMap::iterator* found);
+	void KeepTFXWarmBlobs(const TFXWarmResult& r);
+	static int BuildWarmedTFXPipeline(void* ud, const void* job, void* result);
 
 	ComPtr<ID3DBlob> GetUtilityVertexShader(const std::string& source, const char* entry_point);
 	ComPtr<ID3DBlob> GetUtilityPixelShader(const std::string& source, const char* entry_point);

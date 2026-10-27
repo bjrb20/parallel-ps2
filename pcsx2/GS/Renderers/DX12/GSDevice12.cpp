@@ -37,6 +37,7 @@
 #include <vector>
 
 #include <libretro_d3d.h>
+#include <file/file_path.h>
 
 extern "C" {
 
@@ -1004,6 +1005,7 @@ bool GSDevice12::Create()
 
 	InitializeState();
 	InitializeSamplers();
+	StartTFXWarm();
 	return true;
 }
 
@@ -2355,6 +2357,7 @@ void GSDevice12::DrainDebugMessages()
 
 void GSDevice12::DestroyResources()
 {
+	StopTFXWarm();
 	m_convert_vs.reset();
 
 	for (auto& it : m_tfx_pipelines)
@@ -2422,32 +2425,20 @@ void GSDevice12::DestroyResources()
 	m_device.reset();
 }
 
-const ID3DBlob* GSDevice12::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
+/* The macros a draw shader is compiled with, from its selector: the same
+ * for the drawing thread and the warm-up thread. Returns the entry point. */
+static const char* TFXVertexShaderMacros(GSDevice12::ShaderMacro& sm, GSHWDrawConfig::VSSelector sel)
 {
-	auto it = m_tfx_vertex_shaders.find(sel.key);
-	if (it != m_tfx_vertex_shaders.end())
-		return it->second.get();
-
-	ShaderMacro sm(m_shader_cache.GetFeatureLevel());
 	sm.AddMacro("VERTEX_SHADER", 1);
 	sm.AddMacro("VS_TME", sel.tme);
 	sm.AddMacro("VS_FST", sel.fst);
 	sm.AddMacro("VS_IIP", sel.iip);
 	sm.AddMacro("VS_EXPAND", static_cast<int>(sel.expand));
-
-	const char* entry_point = (sel.expand != GSHWDrawConfig::VSExpand::None) ? "vs_main_expand" : "vs_main";
-	ComPtr<ID3DBlob> vs(m_shader_cache.GetVertexShader(tfx_fx_shader_raw, strlen(tfx_fx_shader_raw), sm.GetPtr(), entry_point));
-	it = m_tfx_vertex_shaders.emplace(sel.key, std::move(vs)).first;
-	return it->second.get();
+	return (sel.expand != GSHWDrawConfig::VSExpand::None) ? "vs_main_expand" : "vs_main";
 }
 
-const ID3DBlob* GSDevice12::GetTFXPixelShader(const GSHWDrawConfig::PSSelector& sel)
+static void TFXPixelShaderMacros(GSDevice12::ShaderMacro& sm, const GSHWDrawConfig::PSSelector& sel)
 {
-	auto it = m_tfx_pixel_shaders.find(sel);
-	if (it != m_tfx_pixel_shaders.end())
-		return it->second.get();
-
-	ShaderMacro sm(m_shader_cache.GetFeatureLevel());
 	sm.AddMacro("PIXEL_SHADER", 1);
 	sm.AddMacro("PS_FST", sel.fst);
 	sm.AddMacro("PS_WMS", sel.wms);
@@ -2506,13 +2497,54 @@ const ID3DBlob* GSDevice12::GetTFXPixelShader(const GSHWDrawConfig::PSSelector& 
 	sm.AddMacro("PS_TEX_IS_FB", sel.tex_is_fb);
 	sm.AddMacro("PS_NO_COLOR", sel.no_color);
 	sm.AddMacro("PS_NO_COLOR1", sel.no_color1);
+}
 
+/* The pixel shader a pipeline is made with: without its second colour
+ * output, and with blending off, when the colours are masked. */
+static GSHWDrawConfig::PSSelector TFXEffectivePS(const GSDevice12::PipelineSelector& p, GSHWDrawConfig::BlendState* bs)
+{
+	GSHWDrawConfig::PSSelector pps{p.ps};
+	*bs = p.bs;
+	if (!p.bs.IsEffective(p.cms))
+	{
+		// disable blending when colours are masked
+		*bs = {};
+		pps.no_color1 = true;
+	}
+	return pps;
+}
+
+const ID3DBlob* GSDevice12::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
+{
+	auto it = m_tfx_vertex_shaders.find(sel.key);
+	if (it != m_tfx_vertex_shaders.end())
+		return it->second.get();
+
+	ShaderMacro sm(m_shader_cache.GetFeatureLevel());
+	const char* entry_point = TFXVertexShaderMacros(sm, sel);
+	ComPtr<ID3DBlob> vs(m_shader_cache.GetVertexShader(tfx_fx_shader_raw, strlen(tfx_fx_shader_raw), sm.GetPtr(), entry_point));
+	it = m_tfx_vertex_shaders.emplace(sel.key, std::move(vs)).first;
+	return it->second.get();
+}
+
+const ID3DBlob* GSDevice12::GetTFXPixelShader(const GSHWDrawConfig::PSSelector& sel)
+{
+	auto it = m_tfx_pixel_shaders.find(sel);
+	if (it != m_tfx_pixel_shaders.end())
+		return it->second.get();
+
+	ShaderMacro sm(m_shader_cache.GetFeatureLevel());
+	TFXPixelShaderMacros(sm, sel);
 	ComPtr<ID3DBlob> ps(m_shader_cache.GetPixelShader(tfx_fx_shader_raw, strlen(tfx_fx_shader_raw), sm.GetPtr(), "ps_main"));
 	it = m_tfx_pixel_shaders.emplace(sel, std::move(ps)).first;
 	return it->second.get();
 }
 
-GSDevice12::ComPtr<ID3D12PipelineState> GSDevice12::CreateTFXPipeline(const PipelineSelector& p)
+/* Everything of a draw pipeline but its shaders' building: the drawing
+ * thread and the warm-up thread both. Reads only what the device set up
+ * at its creation. */
+void GSDevice12::FillTFXPipeline(D3D12::GraphicsPipelineBuilder& gpb, const PipelineSelector& p,
+	const ID3DBlob* vs, const ID3DBlob* ps) const
 {
 	static constexpr std::array<D3D12_PRIMITIVE_TOPOLOGY_TYPE, 3> topology_lookup = {{
 		D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT, // Point
@@ -2520,22 +2552,10 @@ GSDevice12::ComPtr<ID3D12PipelineState> GSDevice12::CreateTFXPipeline(const Pipe
 		D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, // Triangle
 	}};
 
-	GSHWDrawConfig::BlendState pbs{p.bs};
-	GSHWDrawConfig::PSSelector pps{p.ps};
-	if (!p.bs.IsEffective(p.cms))
-	{
-		// disable blending when colours are masked
-		pbs = {};
-		pps.no_color1 = true;
-	}
-
-	const ID3DBlob* vs = GetTFXVertexShader(p.vs);
-	const ID3DBlob* ps = GetTFXPixelShader(pps);
-	if (!vs || !ps)
-		return nullptr;
+	GSHWDrawConfig::BlendState pbs;
+	TFXEffectivePS(p, &pbs);
 
 	// Common state
-	D3D12::GraphicsPipelineBuilder gpb;
 	gpb.SetRootSignature(m_tfx_root_signature.get());
 	gpb.SetPrimitiveTopologyType(topology_lookup[p.topology]);
 	gpb.SetRasterizationState(D3D12_FILL_MODE_SOLID, D3D12_CULL_MODE_NONE, false);
@@ -2618,8 +2638,36 @@ GSDevice12::ComPtr<ID3D12PipelineState> GSDevice12::CreateTFXPipeline(const Pipe
 			D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD, p.cms.wrgba);
 	}
 
+}
+
+GSDevice12::ComPtr<ID3D12PipelineState> GSDevice12::CreateTFXPipeline(const PipelineSelector& p)
+{
+	GSHWDrawConfig::BlendState pbs;
+	const GSHWDrawConfig::PSSelector pps(TFXEffectivePS(p, &pbs));
+	const ID3DBlob* vs = GetTFXVertexShader(p.vs);
+	const ID3DBlob* ps = GetTFXPixelShader(pps);
+	if (!vs || !ps)
+		return nullptr;
+
+	D3D12::GraphicsPipelineBuilder gpb;
+	FillTFXPipeline(gpb, p, vs, ps);
 	ComPtr<ID3D12PipelineState> pipeline(gpb.Create(m_device.get(), m_shader_cache));
 	return pipeline;
+}
+
+/* A pipeline no draw had yet: one the warm-up thread built, else built
+ * here, and listed for the next start either way it was not listed. */
+GSDevice12::TFXPipelineMap::iterator GSDevice12::AddMissingTFXPipeline(const PipelineSelector& p)
+{
+	TFXPipelineMap::iterator it;
+
+	if (m_tfx_warm && CollectWarmedTFXPipelines(&p, &it))
+		return it;
+
+	ComPtr<ID3D12PipelineState> pipeline(CreateTFXPipeline(p));
+	if (pipeline)
+		gs_warm_list_add(&m_tfx_list, &p);
+	return m_tfx_pipelines.emplace(p, std::move(pipeline)).first;
 }
 
 const ID3D12PipelineState* GSDevice12::GetTFXPipeline(const PipelineSelector& p)
@@ -2627,16 +2675,232 @@ const ID3D12PipelineState* GSDevice12::GetTFXPipeline(const PipelineSelector& p)
 	if (m_last_tfx_pipeline && m_last_tfx_pipeline_selector == p)
 		return m_last_tfx_pipeline;
 
-	auto it = m_tfx_pipelines.find(p);
+	TFXPipelineMap::iterator it = m_tfx_pipelines.find(p);
 	if (it == m_tfx_pipelines.end())
-	{
-		ComPtr<ID3D12PipelineState> pipeline(CreateTFXPipeline(p));
-		it = m_tfx_pipelines.emplace(p, std::move(pipeline)).first;
-	}
+		it = AddMissingTFXPipeline(p);
 
 	m_last_tfx_pipeline_selector = p;
 	m_last_tfx_pipeline          = it->second.get();
 	return m_last_tfx_pipeline;
+}
+
+/* ---- draw pipelines built ahead ---- */
+
+/* Bumped with the shaders, and whenever what a selector stands for
+ * changes; the record size is checked as well. */
+static constexpr u32 TFX_LIST_VERSION = (SHADER_CACHE_VERSION << 8) | 1;
+
+void GSDevice12::StartTFXWarm()
+{
+	const std::string path(m_shader_cache.GetPipelineListFileName());
+
+	gs_warm_list_free(&m_tfx_list);
+	m_tfx_list_loaded = 0;
+	if (path.empty())
+		return;
+	if (!gs_warm_list_load(&m_tfx_list, path.c_str(), TFX_LIST_VERSION))
+	{
+		if (path_is_valid(path.c_str()))
+			log_cb(RETRO_LOG_WARN, "GS: ignoring the pipeline list '%s' (another version, or damaged)\n", path.c_str());
+		return;
+	}
+	m_tfx_list_loaded = m_tfx_list.count;
+
+	m_shader_cache.OpenSnapshot(&m_tfx_warm_cache);
+	m_tfx_warm = gs_warm_start(m_tfx_list.recs, m_tfx_list.rec_size, m_tfx_list.count,
+		sizeof(TFXWarmResult), BuildWarmedTFXPipeline, this);
+	if (!m_tfx_warm)
+		D3D12ShaderCache::CloseSnapshot(&m_tfx_warm_cache);
+}
+
+/* Takes what the warm-up thread finished into the map; a pipeline the
+ * drawing thread built meanwhile keeps its own. True, and where it is,
+ * when @want was among them. (The map is only searched by
+ * GetTFXPipeline, which keeps its search inline.) */
+bool GSDevice12::CollectWarmedTFXPipelines(const PipelineSelector* want, TFXPipelineMap::iterator* found)
+{
+	TFXWarmResult r;
+	bool          hit = false;
+
+	while (gs_warm_take(m_tfx_warm, &r))
+	{
+		std::pair<TFXPipelineMap::iterator, bool> ins(
+			m_tfx_pipelines.emplace(r.p, ComPtr<ID3D12PipelineState>()));
+		if (ins.second)
+			*ins.first->second.put() = r.pso;
+		else
+			r.pso->Release();
+		if (want && !hit && r.p == *want)
+		{
+			*found = ins.first;
+			hit    = true;
+		}
+		r.pso = nullptr;
+		KeepTFXWarmBlobs(r);
+	}
+	return hit;
+}
+
+/* What the warm-up thread built that the cache did not have, kept to be
+ * added to it at teardown rather than written while drawing. */
+void GSDevice12::KeepTFXWarmBlobs(const TFXWarmResult& r)
+{
+	if (!r.vs_blob && !r.ps_blob && !r.pso_blob)
+		return;
+	if (m_tfx_warm_blob_count == m_tfx_warm_blob_cap)
+	{
+		const size_t cap = m_tfx_warm_blob_cap ? m_tfx_warm_blob_cap * 2 : 64;
+		TFXWarmResult* blobs = (TFXWarmResult*)realloc(m_tfx_warm_blobs, cap * sizeof(TFXWarmResult));
+		if (!blobs)
+		{
+			if (r.vs_blob)
+				r.vs_blob->Release();
+			if (r.ps_blob)
+				r.ps_blob->Release();
+			if (r.pso_blob)
+				r.pso_blob->Release();
+			return;
+		}
+		m_tfx_warm_blobs    = blobs;
+		m_tfx_warm_blob_cap = cap;
+	}
+	memcpy((void*)&m_tfx_warm_blobs[m_tfx_warm_blob_count++], (const void*)&r, sizeof(r));
+}
+
+/* Before anything the warm-up thread uses goes: the thread is joined, what
+ * it finished is taken (and destroyed with the rest), its blobs go to the
+ * cache, and the list is saved when this session added to it. */
+void GSDevice12::StopTFXWarm()
+{
+	size_t i;
+
+	if (m_tfx_warm)
+	{
+		gs_warm_stop(m_tfx_warm);
+		CollectWarmedTFXPipelines(nullptr, nullptr);
+		gs_warm_free(m_tfx_warm);
+		m_tfx_warm = nullptr;
+		D3D12ShaderCache::CloseSnapshot(&m_tfx_warm_cache);
+	}
+
+	for (i = 0; i < m_tfx_warm_blob_count; i++)
+	{
+		TFXWarmResult* r = &m_tfx_warm_blobs[i];
+		if (r->vs_blob)
+		{
+			m_shader_cache.AddShaderBlobIfMissing(r->vs_key, r->vs_blob);
+			r->vs_blob->Release();
+		}
+		if (r->ps_blob)
+		{
+			m_shader_cache.AddShaderBlobIfMissing(r->ps_key, r->ps_blob);
+			r->ps_blob->Release();
+		}
+		if (r->pso_blob)
+		{
+			m_shader_cache.AddPipelineBlobIfMissing(r->pso_key, r->pso_blob);
+			r->pso_blob->Release();
+		}
+	}
+	free(m_tfx_warm_blobs);
+	m_tfx_warm_blobs     = nullptr;
+	m_tfx_warm_blob_count = 0;
+	m_tfx_warm_blob_cap  = 0;
+
+	if (m_tfx_list.count > m_tfx_list_loaded)
+	{
+		const std::string path(m_shader_cache.GetPipelineListFileName());
+		gs_warm_list_unique(&m_tfx_list);
+		if (!path.empty())
+			gs_warm_list_save(&m_tfx_list, path.c_str(), TFX_LIST_VERSION);
+	}
+	gs_warm_list_free(&m_tfx_list);
+	m_tfx_list_loaded = 0;
+}
+
+/* The warm-up thread: one listed pipeline, its shaders from the cache as
+ * it stood at the start or compiled, its pipeline from the driver's
+ * cached blob when that still holds, else built whole. */
+int GSDevice12::BuildWarmedTFXPipeline(void* ud, const void* job, void* result)
+{
+	GSDevice12* self           = static_cast<GSDevice12*>(ud);
+	const PipelineSelector* p  = static_cast<const PipelineSelector*>(job);
+	TFXWarmResult* r           = static_cast<TFXWarmResult*>(result);
+	const D3D_FEATURE_LEVEL fl = self->m_shader_cache.GetFeatureLevel();
+	const bool debug           = self->m_shader_cache.IsDebug();
+	const std::string_view source(tfx_fx_shader_raw);
+	GSHWDrawConfig::BlendState pbs;
+	GSHWDrawConfig::PSSelector pps;
+	D3D12::GraphicsPipelineBuilder gpb;
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc;
+	ComPtr<ID3DBlob> vs, ps, cached;
+	ComPtr<ID3D12PipelineState> pso;
+
+	memset((void*)r, 0, sizeof(*r));
+	memcpy((void*)&r->p, (const void*)p, sizeof(*p));
+	/* (a selector no draw could make: the tables it indexes end there) */
+	if (p->topology > 2 || p->bs.op > 2)
+		return 0;
+	pps = TFXEffectivePS(*p, &pbs);
+
+	{
+		ShaderMacro sm(fl);
+		const char* entry = TFXVertexShaderMacros(sm, p->vs);
+		r->vs_key = D3D12ShaderCache::GetShaderCacheKey(D3D12ShaderCache::EntryType::VertexShader,
+			source.data(), source.size(), sm.GetPtr(), entry);
+		vs = D3D12ShaderCache::ReadSnapshot(&self->m_tfx_warm_cache, r->vs_key);
+		if (!vs)
+		{
+			if (!(vs = D3D::CompileShader(D3D::ShaderType::Vertex, fl, debug, source, sm.GetPtr(), entry)))
+				return 0;
+			r->vs_blob = vs.get();
+			r->vs_blob->AddRef();
+		}
+	}
+	{
+		ShaderMacro sm(fl);
+		TFXPixelShaderMacros(sm, pps);
+		r->ps_key = D3D12ShaderCache::GetShaderCacheKey(D3D12ShaderCache::EntryType::PixelShader,
+			source.data(), source.size(), sm.GetPtr(), "ps_main");
+		ps = D3D12ShaderCache::ReadSnapshot(&self->m_tfx_warm_cache, r->ps_key);
+		if (!ps)
+		{
+			if (!(ps = D3D::CompileShader(D3D::ShaderType::Pixel, fl, debug, source, sm.GetPtr(), "ps_main")))
+				goto fail;
+			r->ps_blob = ps.get();
+			r->ps_blob->AddRef();
+		}
+	}
+
+	self->FillTFXPipeline(gpb, *p, vs.get(), ps.get());
+	desc       = gpb.GetDesc();
+	r->pso_key = D3D12ShaderCache::GetPipelineCacheKey(desc);
+	if ((cached = D3D12ShaderCache::ReadSnapshot(&self->m_tfx_warm_cache, r->pso_key)))
+	{
+		desc.CachedPSO.pCachedBlob           = cached->GetBufferPointer();
+		desc.CachedPSO.CachedBlobSizeInBytes = cached->GetBufferSize();
+		if (FAILED(self->m_device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(pso.put()))))
+			pso.reset();
+		desc.CachedPSO.pCachedBlob           = nullptr;
+		desc.CachedPSO.CachedBlobSizeInBytes = 0;
+	}
+	if (!pso)
+	{
+		ComPtr<ID3DBlob> blob;
+		if (FAILED(self->m_device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(pso.put()))))
+			goto fail;
+		if (SUCCEEDED(pso->GetCachedBlob(blob.put())))
+			r->pso_blob = blob.detach();
+	}
+	r->pso = pso.detach();
+	return 1;
+
+fail:
+	if (r->vs_blob)
+		r->vs_blob->Release();
+	if (r->ps_blob)
+		r->ps_blob->Release();
+	return 0;
 }
 
 bool GSDevice12::BindDrawPipeline(const PipelineSelector& p)
