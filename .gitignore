@@ -233,8 +233,7 @@ tests/ata/*.img
 /tests/nearplace/nearplace_test*
 /tests/nvram/nvram_test
 /tests/nvram/nvram_test.exe
-/tests/nvram/nvram_test
-/tests/nvram/nvram_test.exe
+/tests/audioqueue/audioqueue_test*
 /tests/d3d12heap/d3d12heap_test
 # Harness outputs of the suites above
 /tests/fastlist/fastlist_test

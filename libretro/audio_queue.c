@@ -1,10 +1,12 @@
 /* See audio_queue.h. C89.
  *
- * The queue is a retro_spsc byte ring: SPU2 mixes straight into it when
- * the contiguous run at the head is long enough, and into a staging array
- * that is copied in when it is not, which happens once per lap of the
- * ring. Every commit is a whole number of stereo frames, so the head only
- * moves by multiples of four bytes and every span is frame-aligned.
+ * The queue is a retro_spsc byte ring, mirrored where the platform allows
+ * it: SPU2 mixes straight into it, and the frontend is handed each mark's
+ * samples in one batch, across the end of the ring. Where the ring is not
+ * mirrored, a reserve that would straddle the end goes to a staging array
+ * that is copied in, once per lap. Every commit is a whole number of
+ * stereo frames, so the head only moves by multiples of four bytes and
+ * every span is frame-aligned.
  *
  * Bounded: if the frontend stops taking audio for longer than the ring
  * holds, about 1.3 s, further samples are dropped and counted. */
@@ -35,7 +37,7 @@ uint32_t audio_queue_dropped;
 int audio_queue_init(void)
 {
 	if (!s_queue_ok)
-		s_queue_ok = retro_spsc_init(&s_queue, AUDIO_QUEUE_BYTES) ? 1 : 0;
+		s_queue_ok = retro_spsc_init_mirrored(&s_queue, AUDIO_QUEUE_BYTES) ? 1 : 0;
 	else
 		retro_spsc_clear(&s_queue);
 	s_written           = 0;
