@@ -557,9 +557,13 @@ bool GSRenderer::can_potentially_super_sample() const
 	return buffers.gpu->get_create_info().size > vram_size * 2;
 }
 
-void GSRenderer::kick_compilation_tasks(const Vulkan::Device::ComputePipelineRecord *prebuild,
-                                        unsigned num_prebuild)
+void GSRenderer::kick_compilation_tasks(const GSOptions &options)
 {
+	const Vulkan::Device::ComputePipelineRecord *prebuild = options.prebuild;
+	const Vulkan::Device::GraphicsPipelineRecord *prebuild_graphics = options.prebuild_graphics;
+	const unsigned num_prebuild = options.num_prebuild;
+	const unsigned num_prebuild_graphics = options.num_prebuild_graphics;
+
 	// Pre-prime all potential shader variants early.
 	std::vector<Vulkan::DeferredPipelineCompile> tasks;
 	compilation_tasks_active = true;
@@ -825,15 +829,16 @@ void GSRenderer::kick_compilation_tasks(const Vulkan::Device::ComputePipelineRec
 	 * before the variants that may never be; the enumeration then skips
 	 * them. A record whose program is gone or whose state no longer
 	 * hashes to its key is left out. (The list was made without
-	 * duplicates.) */
+	 * duplicates.) The render passes of the graphics ones are made
+	 * again here, before any thread is handed one. */
 	std::vector<Vulkan::DeferredPipelineCompile> ordered;
 	Util::Hash *first = nullptr;
 	size_t num_first = 0;
 	size_t i;
 
-	ordered.reserve(tasks.size() + num_prebuild);
-	if (num_prebuild)
-		first = static_cast<Util::Hash *>(malloc(num_prebuild * sizeof(*first)));
+	ordered.reserve(tasks.size() + num_prebuild + num_prebuild_graphics);
+	if (num_prebuild + num_prebuild_graphics)
+		first = static_cast<Util::Hash *>(malloc((num_prebuild + num_prebuild_graphics) * sizeof(*first)));
 	for (i = 0; first && i < num_prebuild; i++)
 	{
 		Vulkan::DeferredPipelineCompile compile;
@@ -842,8 +847,82 @@ void GSRenderer::kick_compilation_tasks(const Vulkan::Device::ComputePipelineRec
 		ordered.push_back(compile);
 		first[num_first++] = compile.hash;
 	}
+	for (i = 0; first && i < num_prebuild_graphics; i++)
+	{
+		Vulkan::DeferredPipelineCompile compile;
+		if (!device->resolve_graphics_pipeline_record(prebuild_graphics[i], compile))
+			continue;
+		ordered.push_back(compile);
+		first[num_first++] = compile.hash;
+	}
+	/* The scanout's, which every frame draws with: all of them drawn
+	 * into the 8-bit RGBA images every circuit, merge and deinterlace
+	 * pass renders to - the four display formats at each super-sample
+	 * count the device can take, read from the buffer or a promoted
+	 * image; the merge's opaque and alpha-blended blits; the weave. A
+	 * blend by PMODE.ALP is one per value, so only the list has those.
+	 * They go ahead of the compute variants, after the records, whose
+	 * render passes are only ever made from what the list says. */
+	std::vector<Vulkan::DeferredPipelineCompile> scanout_tasks;
+	{
+		Vulkan::RenderPassSignature sig;
+		const Vulkan::RenderPass *pass;
+		memset(&sig, 0, sizeof(sig));
+		sig.formats[0]    = VK_FORMAT_R8G8B8A8_UNORM;
+		sig.samples[0]    = VK_SAMPLE_COUNT_1_BIT;
+		sig.num_color     = 1;
+		sig.depth_format  = VK_FORMAT_UNDEFINED;
+		sig.recordable    = 1;
+		pass = device->recreate_render_pass(sig);
+		if (pass)
+		{
+			static const uint32_t psms[] = { PSMCT32, PSMCT24, PSMCT16, PSMCT16S };
+			static const uint32_t super_samples[] = { 1, 4, 8, 16, 32 };
+			const uint32_t max_super_samples = can_potentially_super_sample()
+				? uint32_t(get_max_supported_super_sampling()) : 1u;
+			auto cmd = device->request_command_buffer();
+			Vulkan::DeferredPipelineCompile deferred = {};
+			unsigned promoted, s, f;
+
+			for (promoted = 0; promoted < 2; promoted++)
+				for (s = 0; s < 5 && super_samples[s] <= max_super_samples; s++)
+					for (f = 0; f < 4; f++)
+					{
+						cmd->set_opaque_sprite_state();
+						cmd->set_program(sample_quad[promoted]);
+						cmd->set_specialization_constant_mask(0x7);
+						cmd->set_specialization_constant(0, psms[f]);
+						cmd->set_specialization_constant(1, vram_size - 1);
+						cmd->set_specialization_constant(2, super_samples[s]);
+						cmd->extract_graphics_pipeline_state(deferred, *pass, 0);
+						scanout_tasks.push_back(deferred);
+					}
+
+			cmd->set_specialization_constant_mask(0);
+			cmd->set_opaque_sprite_state();
+			cmd->set_program(blit_quad);
+			cmd->extract_graphics_pipeline_state(deferred, *pass, 0);
+			scanout_tasks.push_back(deferred);
+			cmd->set_blend_enable(true);
+			cmd->set_blend_op(VK_BLEND_OP_ADD);
+			cmd->set_blend_factors(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE,
+			                       VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_ZERO);
+			cmd->extract_graphics_pipeline_state(deferred, *pass, 0);
+			scanout_tasks.push_back(deferred);
+
+			cmd->set_opaque_sprite_state();
+			cmd->set_program(weave_quad);
+			cmd->extract_graphics_pipeline_state(deferred, *pass, 0);
+			scanout_tasks.push_back(deferred);
+			device->submit_discard(cmd);
+		}
+	}
+
 	if (num_first)
 		qsort(first, num_first, sizeof(*first), compare_hash);
+	for (i = 0; i < scanout_tasks.size(); i++)
+		if (!num_first || !bsearch(&scanout_tasks[i].hash, first, num_first, sizeof(*first), compare_hash))
+			ordered.push_back(scanout_tasks[i]);
 	for (i = 0; i < tasks.size(); i++)
 		if (!num_first || !bsearch(&tasks[i].hash, first, num_first, sizeof(*first), compare_hash))
 			ordered.push_back(tasks[i]);
@@ -879,8 +958,12 @@ void GSRenderer::kick_compilation_tasks(const Vulkan::Device::ComputePipelineRec
 				// If we destroy the device before threads are done spinning.
 				if (!compilation_tasks_active)
 					break;
-				Vulkan::CommandBuffer::build_compute_pipeline(
-						device, task, Vulkan::CommandBuffer::CompileMode::AsyncThread);
+				if (task.program->get_shader(Vulkan::ShaderStage::Compute))
+					Vulkan::CommandBuffer::build_compute_pipeline(
+							device, task, Vulkan::CommandBuffer::CompileMode::AsyncThread);
+				else
+					Vulkan::CommandBuffer::build_graphics_pipeline(
+							device, task, Vulkan::CommandBuffer::CompileMode::AsyncThread);
 			}
 			// Published last: the non-blocking drain joins on seeing this.
 			task_state->done.store(true, PGS::memory_order_release);
@@ -983,7 +1066,7 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 	descriptor_timeline = device->request_semaphore(VK_SEMAPHORE_TYPE_TIMELINE);
 	init_luts();
 
-	kick_compilation_tasks(options.prebuild, options.num_prebuild);
+	kick_compilation_tasks(options);
 
 	// Reserve 1/3 of our budget to slab-allocate image handles.
 	Vulkan::HeapBudget budgets[VK_MAX_MEMORY_HEAPS] = {};

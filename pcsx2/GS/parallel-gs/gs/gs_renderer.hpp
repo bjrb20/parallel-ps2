@@ -556,7 +556,7 @@ private:
 
 	void drain_compilation_tasks();
 	void drain_compilation_tasks_nonblock();
-	void kick_compilation_tasks(const Vulkan::Device::ComputePipelineRecord *prebuild, unsigned num_prebuild);
+	void kick_compilation_tasks(const GSOptions &options);
 	PGS::atomic_bool compilation_tasks_active;
 
 	/* std::async's future was asked for three things here: run the batch

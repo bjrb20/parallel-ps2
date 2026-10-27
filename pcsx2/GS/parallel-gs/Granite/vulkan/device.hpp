@@ -276,6 +276,38 @@ public:
 		return legacy_pipeline_cache;
 	}
 
+	/* A graphics pipeline the same way: the program, the compatible
+	 * render pass by its key and by what it is made from, the subpass,
+	 * the state words, blend and specialisation constants and the
+	 * vertex layout. */
+	struct GraphicsPipelineRecord
+	{
+		uint64_t program_hash;
+		uint64_t pipeline_hash;
+		uint64_t render_pass_hash;
+		uint32_t static_words[4];
+		uint32_t spec_constants[VULKAN_NUM_TOTAL_SPEC_CONSTANTS];
+		uint32_t spec_masks;       /* user mask | internal mask << 8 */
+		uint32_t subgroup_size_tag;
+		uint32_t subpass_index;
+		uint32_t blend_constants[4]; /* the floats' bits */
+		uint32_t attribs[VULKAN_NUM_VERTEX_ATTRIBS][3]; /* binding, format, offset */
+		uint32_t strides[VULKAN_NUM_VERTEX_BUFFERS];
+		uint32_t input_rates[VULKAN_NUM_VERTEX_BUFFERS];
+		RenderPassSignature pass;
+	};
+	enum { GRAPHICS_PIPELINE_RECORDS = 1024 };
+	void record_graphics_pipeline(const DeferredPipelineCompile &compile);
+	unsigned get_graphics_pipeline_records(const GraphicsPipelineRecord **records) const;
+	/* The compatible render pass a signature describes, made again from
+	 * 1x1 stand-ins when there is none yet. The thread that makes the
+	 * device's images, before any other thread is handed the pass. */
+	const RenderPass *recreate_render_pass(const RenderPassSignature &signature);
+	/* As resolve_compute_pipeline_record; the record's render pass is
+	 * made again when it is not there. Same thread as above. */
+	bool resolve_graphics_pipeline_record(const GraphicsPipelineRecord &record,
+	                                      DeferredPipelineCompile &compile);
+
 	// Frame-pushing interface.
 	void next_frame_context();
 	bool next_frame_context_is_non_blocking();
@@ -796,6 +828,9 @@ private:
 	ComputePipelineRecord *compute_records = nullptr;
 	PGS::atomic_uint32_t compute_records_claimed;
 	PGS::atomic_uint32_t compute_records_written;
+	GraphicsPipelineRecord *graphics_records = nullptr;
+	PGS::atomic_uint32_t graphics_records_claimed;
+	PGS::atomic_uint32_t graphics_records_written;
 
 	void init_pipeline_cache();
 	void flush_pipeline_cache();

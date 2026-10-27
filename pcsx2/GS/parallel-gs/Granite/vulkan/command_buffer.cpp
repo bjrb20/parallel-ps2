@@ -1600,7 +1600,10 @@ Pipeline CommandBuffer::build_graphics_pipeline(Device *device, const DeferredPi
 		return {};
 	}
 
-	auto returned_pipeline = compile.program->add_pipeline(compile.hash, { pipeline, dynamic_mask });
+	/* Built ahead: staged until a recording thread misses on it. */
+	auto returned_pipeline = mode == CompileMode::AsyncThread
+		? compile.program->add_staged_pipeline(compile.hash, { pipeline, dynamic_mask })
+		: compile.program->add_pipeline(compile.hash, { pipeline, dynamic_mask });
 	if (returned_pipeline.pipeline != pipeline)
 		table.vkDestroyPipeline(device->get_device(), pipeline, nullptr);
 	return returned_pipeline;
@@ -1756,12 +1759,43 @@ void CommandBuffer::update_hash_graphics_pipeline(DeferredPipelineCompile &compi
 
 bool CommandBuffer::flush_graphics_pipeline(bool synchronous)
 {
-	auto mode = synchronous ? CompileMode::Sync : CompileMode::FailOnCompileRequired;
 	update_hash_graphics_pipeline(pipeline_state, &active_vbos);
 	current_pipeline = pipeline_state.program->get_pipeline(pipeline_state.hash);
 	if (current_pipeline.pipeline == VK_NULL_HANDLE)
-		current_pipeline = build_graphics_pipeline(device, pipeline_state, mode);
-	return current_pipeline.pipeline != VK_NULL_HANDLE;
+		return flush_graphics_pipeline_miss(synchronous);
+	return true;
+}
+
+/* As flush_compute_pipeline_miss. */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#elif defined(_MSC_VER)
+__declspec(noinline)
+#endif
+bool CommandBuffer::flush_graphics_pipeline_miss(bool synchronous)
+{
+	Pipeline staged = pipeline_state.program->get_staged_pipeline(pipeline_state.hash);
+
+	if (staged.pipeline != VK_NULL_HANDLE)
+		current_pipeline = pipeline_state.program->add_pipeline(pipeline_state.hash, staged);
+	else
+		current_pipeline = build_graphics_pipeline(
+			device, pipeline_state,
+			synchronous ? CompileMode::Sync : CompileMode::FailOnCompileRequired);
+	if (current_pipeline.pipeline == VK_NULL_HANDLE)
+		return false;
+	device->record_graphics_pipeline(pipeline_state);
+	return true;
+}
+
+void CommandBuffer::extract_graphics_pipeline_state(DeferredPipelineCompile &compile,
+                                                    const RenderPass &pass, unsigned subpass) const
+{
+	compile = pipeline_state;
+	compile.compatible_render_pass = &pass;
+	compile.subpass_index          = subpass;
+	if (compile.program)
+		update_hash_graphics_pipeline(compile, nullptr);
 }
 
 void CommandBuffer::bind_pipeline(VkPipelineBindPoint bind_point, VkPipeline pipeline, uint32_t active_dynamic_state)

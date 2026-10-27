@@ -208,6 +208,9 @@ static unsigned      s_disp_dh  = 447;
 static unsigned      s_smode2   = 1;       /* interlaced */
 static unsigned      s_smode1_hi, s_smode1_lo; /* SMODE1, written when set */
 static unsigned      s_display_off;        /* PMODE 0, DISPFB1 and DISPLAY1 left unset */
+static unsigned      s_pmode = 0xFF25u;    /* RC1, alpha FF */
+static unsigned      s_disp_psm;           /* DISPFB1's (and 2's) format */
+static unsigned      s_circuit2;           /* DISPFB2 and DISPLAY2 as 1's */
 
 /* A case may instead lay out its own quadwords and send them in kicks,
  * each a run of them sent after waiting a number of vsyncs, and then
@@ -681,6 +684,23 @@ static void case_points(void)
 	s_expect_run[0] = 0x78563412ul;
 }
 
+/* The points on a display the renderer scans out, as a BIOS sets it:
+ * NTSC, the interlaced field mode the reset leaves (deinterlaced), or
+ * not interlaced; both read circuits merged by PMODE.ALP or by the
+ * pixels' alpha; a 16-bit display format. The scanout's pipelines are
+ * what these change. */
+static void points_ntsc(void)
+{
+	case_points();
+	s_smode1_hi = 0x7;
+	s_smode1_lo = 0x40834504u;
+}
+static void case_scan_field(void) { points_ntsc(); }
+static void case_scan_noninterlaced(void) { points_ntsc(); s_smode2 = 0; }
+static void case_scan_alp(void) { points_ntsc(); s_pmode = 0x8027u; s_circuit2 = 1; }  /* EN1 EN2, ALP 0x80 */
+static void case_scan_src_alpha(void) { points_ntsc(); s_pmode = 0x0007u; s_circuit2 = 1; } /* EN1 EN2, MMOD 0 */
+static void case_scan_ct16s(void) { points_ntsc(); s_disp_psm = 0xA; }
+
 /* A sprite into each of nine frames in turn, one more than a render
  * pass keeps apart: the ninth ends the pass (a sanitizer build sees what
  * it is started from). */
@@ -990,6 +1010,11 @@ static const struct { const char* name; void (*build)(void); const char* scale; 
 	{ "big_triangles",   case_big_triangles, "1" },
 	{ "present",         case_present,       "1" },
 	{ "points",          case_points,        "1" },
+	{ "scan_field",      case_scan_field,    "1" },
+	{ "scan_noninterlaced", case_scan_noninterlaced, "1" },
+	{ "scan_alp",        case_scan_alp,      "1" },
+	{ "scan_src_alpha",  case_scan_src_alpha, "1" },
+	{ "scan_ct16s",      case_scan_ct16s,    "1" },
 	{ "uv_huge",         case_uv_huge,       "1" },
 	{ "fb_wrap",         case_fb_wrap,       "1" },
 	{ "nine_frames",     case_nine_frames,   "1" },
@@ -1035,15 +1060,21 @@ static int sl_write_bios(const char* path)
 			sl_put32(pk + i * 16 + k * 4, s_qw[i][k]);
 
 	pc = sl_emit(rom, 0, SL_LUI(8, 0xB200));                         /* t0 = GS privileged regs */
-	pc = sl_emit_store64(rom, pc, 8, 0x00, 0, s_display_off ? 0 : 0xFF25u); /* PMODE: RC1, alpha FF */
+	pc = sl_emit_store64(rom, pc, 8, 0x00, 0, s_display_off ? 0 : s_pmode); /* PMODE                */
 	if (s_smode1_hi || s_smode1_lo)
 		pc = sl_emit_store64(rom, pc, 8, 0x10, s_smode1_hi, s_smode1_lo); /* SMODE1             */
 	pc = sl_emit_store64(rom, pc, 8, 0x20, 0, s_smode2);             /* SMODE2                  */
 	if (!s_display_off)
 	{
-		pc = sl_emit_store64(rom, pc, 8, 0x70, 0, s_disp_fbw << 9);  /* DISPFB1                 */
+		pc = sl_emit_store64(rom, pc, 8, 0x70, 0, (s_disp_fbw << 9) | (s_disp_psm << 15)); /* DISPFB1 */
 		pc = sl_emit_store64(rom, pc, 8, 0x80, 2559u | (s_disp_dh << 12), /* DISPLAY1            */
 			636u | (50u << 12) | (3u << 23));
+		if (s_circuit2)
+		{
+			pc = sl_emit_store64(rom, pc, 8, 0x90, 0, (s_disp_fbw << 9) | (s_disp_psm << 15)); /* DISPFB2 */
+			pc = sl_emit_store64(rom, pc, 8, 0xA0, 2559u | (s_disp_dh << 12), /* DISPLAY2        */
+				636u | (50u << 12) | (3u << 23));
+		}
 	}
 	/* Copy the quadwords: t3 = ROM source, t4 = RAM destination, t6 = words. */
 	pc = sl_emit(rom, pc, SL_LUI(11, 0xBFC0));

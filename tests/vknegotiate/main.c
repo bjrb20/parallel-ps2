@@ -35,7 +35,8 @@
  * pictures of two builds or two cases to be compared.
  * VN_COUNT_PIPELINES counts the pipelines the core builds by the thread
  * that builds them - its compile threads are named PGS-Compile - and the
- * longest frame after the first (Linux: thread names).
+ * longest frame after the first (Linux: thread names), and the graphics
+ * ones apart. VN_OPTIONS sets core options, "key=value;key=value".
  *
  * Usage: vknegotiate <path-to-core> <scratch-dir> <v2|v2retry|v1> */
 
@@ -134,18 +135,27 @@ static PFN_vkGetDeviceProcAddr       vn_real_gdpa;
 static PFN_vkCreateComputePipelines  vn_real_ccp;
 static PFN_vkCreateGraphicsPipelines vn_real_cgp;
 static long vn_pipes_frame, vn_pipes_compile;
+static long vn_gfx_frame, vn_gfx_compile;
 
-static void vn_count_pipes(uint32_t n)
+static void vn_count_pipes(uint32_t n, int graphics)
 {
 #ifndef _WIN32
 	char name[32] = "";
 	pthread_getname_np(pthread_self(), name, sizeof(name));
 	if (!strncmp(name, "PGS-Compile", 11))
+	{
 		__sync_fetch_and_add(&vn_pipes_compile, (long)n);
+		if (graphics)
+			__sync_fetch_and_add(&vn_gfx_compile, (long)n);
+	}
 	else
+	{
 		__sync_fetch_and_add(&vn_pipes_frame, (long)n);
+		if (graphics)
+			__sync_fetch_and_add(&vn_gfx_frame, (long)n);
+	}
 #else
-	(void)n;
+	(void)n; (void)graphics;
 #endif
 }
 
@@ -162,14 +172,14 @@ static long vn_pipes_read(long* counter)
 static VKAPI_ATTR VkResult VKAPI_CALL vn_ccp(VkDevice d, VkPipelineCache c, uint32_t n,
 	const VkComputePipelineCreateInfo* ci, const VkAllocationCallbacks* a, VkPipeline* out)
 {
-	vn_count_pipes(n);
+	vn_count_pipes(n, 0);
 	return vn_real_ccp(d, c, n, ci, a, out);
 }
 
 static VKAPI_ATTR VkResult VKAPI_CALL vn_cgp(VkDevice d, VkPipelineCache c, uint32_t n,
 	const VkGraphicsPipelineCreateInfo* ci, const VkAllocationCallbacks* a, VkPipeline* out)
 {
-	vn_count_pipes(n);
+	vn_count_pipes(n, 1);
 	return vn_real_cgp(d, c, n, ci, a, out);
 }
 
@@ -307,6 +317,29 @@ static void vn_wait_sync(void *h)
 static void vn_lock(void *h) { (void)h; s_queue_locked++; }
 static void vn_unlock(void *h) { (void)h; s_queue_locked--; }
 static void vn_set_sem(void *h, VkSemaphore s) { (void)h; (void)s; }
+
+/* VN_OPTIONS: the value of core option @key, or NULL. */
+static const char* vn_option(const char* key)
+{
+	static char values[8][128];
+	static unsigned next;
+	const char* opts = getenv("VN_OPTIONS");
+	size_t klen = strlen(key);
+	while (opts && *opts)
+	{
+		const char* end = strchr(opts, ';');
+		size_t len = end ? (size_t)(end - opts) : strlen(opts);
+		if (len > klen && opts[klen] == '=' && !strncmp(opts, key, klen) && len - klen - 1 < sizeof(values[0]))
+		{
+			char* v = values[next++ % 8];
+			memcpy(v, opts + klen + 1, len - klen - 1);
+			v[len - klen - 1] = '\0';
+			return v;
+		}
+		opts = end ? end + 1 : NULL;
+	}
+	return NULL;
+}
 
 /* VN_HASH_IMAGE: the last image handed over, copied to a buffer the host
  * can read and hashed (FNV-1a over its rows); left in the layout it came
@@ -487,6 +520,8 @@ static bool vn_environment(unsigned cmd, void* data)
 			else if (!strcmp(var->key, "pcsx2_fastboot")) var->value = "disabled";
 			else if (!strcmp(var->key, "pcsx2_upscale_multiplier")) var->value = getenv("VN_SCALE");
 			else if (!strcmp(var->key, "pcsx2_hw_download_mode")) var->value = getenv("VN_HW_DOWNLOAD");
+			if (!var->value)
+				var->value = vn_option(var->key);
 			return var->value != NULL;
 		case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER:
 			/* (what the software renderer on the hardware device asks) */
@@ -939,6 +974,9 @@ int main(int argc, char** argv)
 		if (getenv("VN_COUNT_PIPELINES"))
 			printf("  pipelines: %ld built on the frame's threads, %ld on compile threads; longest frame after the first %.2f ms\n",
 				vn_pipes_read(&vn_pipes_frame), vn_pipes_read(&vn_pipes_compile), longest);
+		if (getenv("VN_COUNT_PIPELINES"))
+			printf("  graphics pipelines: %ld built on the frame's threads, %ld on compile threads\n",
+				vn_pipes_read(&vn_gfx_frame), vn_pipes_read(&vn_gfx_compile));
 	}
 	printf("  %d frames run, %u presented, %u duped, %u as images\n", frames, s_frames, s_dupes, s_images);
 	if (getenv("VN_HASH_IMAGE"))

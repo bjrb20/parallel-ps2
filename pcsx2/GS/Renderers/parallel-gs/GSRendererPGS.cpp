@@ -20,6 +20,7 @@
 #include <encodings/crc32.h>
 #include "Config.h"
 #include <stdarg.h>
+#include <stddef.h>
 
 using namespace Vulkan;
 using namespace ParallelGS;
@@ -253,19 +254,28 @@ GSRendererPGS::~GSRendererPGS()
 	}
 	free(pipeline_blob);
 	free(pipeline_list);
+	free(pipeline_list_graphics);
 	pgs_release_vsync_images();
 }
 
 /* ------------------------------------------------------------------------
  *  Pipelines kept across sessions: the device's VkPipelineCache, which a
- *  new driver throws away, and the list of compute pipelines in use,
- *  which it does not - the next session builds those ahead first.
+ *  new driver throws away, and the list of pipelines in use, compute and
+ *  graphics, which it does not - the next session builds those ahead
+ *  first.
+ *
+ *  The list: magic, version, then for compute and for graphics the
+ *  record size and count, the CRC32 of what follows, the compute records
+ *  and the graphics ones. Another version is not read.
  * ------------------------------------------------------------------------ */
 
 #define PGS_LIST_MAGIC   0x4c534750u /* "PGSL" */
-#define PGS_LIST_VERSION 1u
-#define PGS_LIST_HEADER  20u
+#define PGS_LIST_VERSION 2u
+#define PGS_LIST_HEADER  28u
 #define PGS_LIST_MAX     (2u * Vulkan::Device::COMPUTE_PIPELINE_RECORDS)
+#define PGS_LIST_MAX_GFX (2u * Vulkan::Device::GRAPHICS_PIPELINE_RECORDS)
+#define PGS_REC_COMPUTE  ((uint32_t)sizeof(Vulkan::Device::ComputePipelineRecord))
+#define PGS_REC_GRAPHICS ((uint32_t)sizeof(Vulkan::Device::GraphicsPipelineRecord))
 
 static bool pgs_pipeline_path(char *out, size_t size, const char *name)
 {
@@ -284,26 +294,45 @@ static uint32_t pgs_rd32(const uint8_t *p)
 
 /* The records of a list file, or none: its header, size and CRC all
  * have to agree. */
-static Vulkan::Device::ComputePipelineRecord *pgs_parse_list(const uint8_t *data, int64_t size,
-                                                             unsigned *count)
+static bool pgs_parse_list(const uint8_t *data, int64_t size,
+                           Vulkan::Device::ComputePipelineRecord **compute, unsigned *num_compute,
+                           Vulkan::Device::GraphicsPipelineRecord **graphics, unsigned *num_graphics)
 {
-	const uint32_t rec = (uint32_t)sizeof(Vulkan::Device::ComputePipelineRecord);
-	Vulkan::Device::ComputePipelineRecord *list;
-	uint32_t n;
+	uint32_t nc, ng;
+	size_t bc, bg;
 
-	*count = 0;
+	*compute      = nullptr;
+	*graphics     = nullptr;
+	*num_compute  = 0;
+	*num_graphics = 0;
 	if (size < (int64_t)PGS_LIST_HEADER || pgs_rd32(data) != PGS_LIST_MAGIC
-	    || pgs_rd32(data + 4) != PGS_LIST_VERSION || pgs_rd32(data + 8) != rec)
-		return nullptr;
-	n = pgs_rd32(data + 12);
-	if (n == 0 || n > PGS_LIST_MAX || size != (int64_t)PGS_LIST_HEADER + (int64_t)n * rec
-	    || encoding_crc32(0, data + PGS_LIST_HEADER, (size_t)n * rec) != pgs_rd32(data + 16))
-		return nullptr;
-	if (!(list = static_cast<Vulkan::Device::ComputePipelineRecord *>(malloc((size_t)n * rec))))
-		return nullptr;
-	memcpy(list, data + PGS_LIST_HEADER, (size_t)n * rec);
-	*count = n;
-	return list;
+	    || pgs_rd32(data + 4) != PGS_LIST_VERSION
+	    || pgs_rd32(data + 8) != PGS_REC_COMPUTE || pgs_rd32(data + 16) != PGS_REC_GRAPHICS)
+		return false;
+	nc = pgs_rd32(data + 12);
+	ng = pgs_rd32(data + 20);
+	if ((nc == 0 && ng == 0) || nc > PGS_LIST_MAX || ng > PGS_LIST_MAX_GFX)
+		return false;
+	bc = (size_t)nc * PGS_REC_COMPUTE;
+	bg = (size_t)ng * PGS_REC_GRAPHICS;
+	if (size != (int64_t)(PGS_LIST_HEADER + bc + bg)
+	    || encoding_crc32(0, data + PGS_LIST_HEADER, bc + bg) != pgs_rd32(data + 24))
+		return false;
+	if (nc && !(*compute = static_cast<Vulkan::Device::ComputePipelineRecord *>(malloc(bc))))
+		return false;
+	if (ng && !(*graphics = static_cast<Vulkan::Device::GraphicsPipelineRecord *>(malloc(bg))))
+	{
+		free(*compute);
+		*compute = nullptr;
+		return false;
+	}
+	if (nc)
+		memcpy(*compute, data + PGS_LIST_HEADER, bc);
+	if (ng)
+		memcpy(*graphics, data + PGS_LIST_HEADER + bc, bg);
+	*num_compute  = nc;
+	*num_graphics = ng;
+	return true;
 }
 
 void GSRendererPGS::load_pipelines()
@@ -328,8 +357,9 @@ void GSRendererPGS::load_pipelines()
 	if (pgs_pipeline_path(path, sizeof(path), "pgs_pipeline_list.bin")
 	    && filestream_read_file(path, &data, &len) && len > 0)
 	{
-		pipeline_list = pgs_parse_list(static_cast<const uint8_t *>(data), len, &pipeline_list_count);
-		if (!pipeline_list)
+		if (!pgs_parse_list(static_cast<const uint8_t *>(data), len,
+		                    &pipeline_list, &pipeline_list_count,
+		                    &pipeline_list_graphics, &pipeline_list_graphics_count))
 			LOGW("Ignoring a damaged pipeline list (%s).\n", path);
 	}
 	free(data);
@@ -352,13 +382,58 @@ static int pgs_compare_key(const void *a, const void *b)
 	return x->index < y->index ? -1 : (x->index > y->index ? 1 : 0);
 }
 
+typedef char pgs_compute_hash_at_8[offsetof(Vulkan::Device::ComputePipelineRecord, pipeline_hash) == 8 ? 1 : -1];
+typedef char pgs_graphics_hash_at_8[offsetof(Vulkan::Device::GraphicsPipelineRecord, pipeline_hash) == 8 ? 1 : -1];
+
+/* @num_new records of @rec bytes, then @num_old, into @out: each
+ * pipeline once, the first of a hash kept, at most @max. A record's
+ * pipeline hash is its second 64-bit word. Returns how many. */
+static unsigned pgs_merge_records(uint8_t *out, const uint8_t *added, unsigned num_new,
+                                  const uint8_t *old, unsigned num_old, uint32_t rec, unsigned max)
+{
+	const unsigned total = num_new + num_old;
+	pgs_list_key *keys;
+	uint8_t *keep;
+	unsigned i, kept = 0;
+
+	if (!total)
+		return 0;
+	keys = static_cast<pgs_list_key *>(malloc(total * sizeof(*keys)));
+	keep = static_cast<uint8_t *>(calloc(total, 1));
+	if (keys && keep)
+	{
+		for (i = 0; i < total; i++)
+		{
+			const uint8_t *r = i < num_new ? added + (size_t)i * rec : old + (size_t)(i - num_new) * rec;
+			memcpy(&keys[i].hash, r + 8, 8);
+			keys[i].index = i;
+		}
+		qsort(keys, total, sizeof(*keys), pgs_compare_key);
+		for (i = 0; i < total; i++)
+			if (i == 0 || keys[i].hash != keys[i - 1].hash)
+				keep[keys[i].index] = 1;
+		for (i = 0; i < total && kept < max; i++)
+		{
+			if (!keep[i])
+				continue;
+			memcpy(out + (size_t)kept * rec,
+			       i < num_new ? added + (size_t)i * rec : old + (size_t)(i - num_new) * rec, rec);
+			kept++;
+		}
+	}
+	free(keys);
+	free(keep);
+	return kept;
+}
+
 void GSRendererPGS::save_pipelines()
 {
-	const uint32_t rec = (uint32_t)sizeof(Vulkan::Device::ComputePipelineRecord);
 	const Vulkan::Device::ComputePipelineRecord *session = nullptr;
+	const Vulkan::Device::GraphicsPipelineRecord *session_graphics = nullptr;
 	char path[PCSX2_PATH_MAX];
 	size_t size;
-	unsigned num_session, total, i, kept;
+	unsigned num_session, num_session_graphics, nc, ng;
+	uint8_t *out;
 
 	/* The cache, when the driver hands back something new. */
 	size = dev.get_pipeline_cache_size();
@@ -373,49 +448,39 @@ void GSRendererPGS::save_pipelines()
 
 	/* The list: this session's first, then the ones before it that this
 	 * session did not use, each pipeline once. */
-	num_session = dev.get_compute_pipeline_records(&session);
-	if (!num_session || !pgs_pipeline_path(path, sizeof(path), "pgs_pipeline_list.bin"))
+	num_session          = dev.get_compute_pipeline_records(&session);
+	num_session_graphics = dev.get_graphics_pipeline_records(&session_graphics);
+	if ((!num_session && !num_session_graphics)
+	    || !pgs_pipeline_path(path, sizeof(path), "pgs_pipeline_list.bin"))
 		return;
-	total = num_session + pipeline_list_count;
+	out = static_cast<uint8_t *>(malloc(PGS_LIST_HEADER
+	        + (size_t)(num_session + pipeline_list_count) * PGS_REC_COMPUTE
+	        + (size_t)(num_session_graphics + pipeline_list_graphics_count) * PGS_REC_GRAPHICS));
+	if (!out)
+		return;
+	nc = pgs_merge_records(out + PGS_LIST_HEADER,
+	                       reinterpret_cast<const uint8_t *>(session), num_session,
+	                       reinterpret_cast<const uint8_t *>(pipeline_list), pipeline_list_count,
+	                       PGS_REC_COMPUTE, PGS_LIST_MAX);
+	ng = pgs_merge_records(out + PGS_LIST_HEADER + (size_t)nc * PGS_REC_COMPUTE,
+	                       reinterpret_cast<const uint8_t *>(session_graphics), num_session_graphics,
+	                       reinterpret_cast<const uint8_t *>(pipeline_list_graphics), pipeline_list_graphics_count,
+	                       PGS_REC_GRAPHICS, PGS_LIST_MAX_GFX);
+	if (nc || ng)
 	{
-		pgs_list_key *keys = static_cast<pgs_list_key *>(malloc(total * sizeof(*keys)));
-		uint8_t *out       = static_cast<uint8_t *>(malloc(PGS_LIST_HEADER + (size_t)total * rec));
-		uint8_t *keep      = static_cast<uint8_t *>(calloc(total, 1));
-		uint32_t header[5];
-
-		if (keys && out && keep)
-		{
-			for (i = 0; i < total; i++)
-			{
-				keys[i].hash  = i < num_session ? session[i].pipeline_hash
-				                                : pipeline_list[i - num_session].pipeline_hash;
-				keys[i].index = i;
-			}
-			qsort(keys, total, sizeof(*keys), pgs_compare_key);
-			for (i = 0; i < total; i++)
-				if (i == 0 || keys[i].hash != keys[i - 1].hash)
-					keep[keys[i].index] = 1;
-
-			for (i = 0, kept = 0; i < total && kept < PGS_LIST_MAX; i++)
-			{
-				if (!keep[i])
-					continue;
-				memcpy(out + PGS_LIST_HEADER + (size_t)kept * rec,
-				       i < num_session ? &session[i] : &pipeline_list[i - num_session], rec);
-				kept++;
-			}
-			header[0] = PGS_LIST_MAGIC;
-			header[1] = PGS_LIST_VERSION;
-			header[2] = rec;
-			header[3] = kept;
-			header[4] = encoding_crc32(0, out + PGS_LIST_HEADER, (size_t)kept * rec);
-			memcpy(out, header, sizeof(header));
-			filestream_write_file_atomic(path, out, PGS_LIST_HEADER + (int64_t)kept * rec);
-		}
-		free(keys);
-		free(out);
-		free(keep);
+		const size_t body = (size_t)nc * PGS_REC_COMPUTE + (size_t)ng * PGS_REC_GRAPHICS;
+		uint32_t header[7];
+		header[0] = PGS_LIST_MAGIC;
+		header[1] = PGS_LIST_VERSION;
+		header[2] = PGS_REC_COMPUTE;
+		header[3] = nc;
+		header[4] = PGS_REC_GRAPHICS;
+		header[5] = ng;
+		header[6] = encoding_crc32(0, out + PGS_LIST_HEADER, body);
+		memcpy(out, header, sizeof(header));
+		filestream_write_file_atomic(path, out, (int64_t)(PGS_LIST_HEADER + body));
 	}
+	free(out);
 }
 
 struct ParsedSuperSampling
@@ -479,6 +544,8 @@ bool GSRendererPGS::Init()
 	opts.super_sampled_textures = GSConfig.PGSSuperSampleTextures != 0;
 	opts.prebuild               = pipeline_list;
 	opts.num_prebuild           = pipeline_list_count;
+	opts.prebuild_graphics      = pipeline_list_graphics;
+	opts.num_prebuild_graphics  = pipeline_list_graphics_count;
 	if (!iface.init(&dev, opts))
 		return false;
 	pipelines_persist = true;

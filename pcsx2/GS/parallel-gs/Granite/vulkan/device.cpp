@@ -90,6 +90,8 @@ Device::Device()
 {
 	compute_records = static_cast<ComputePipelineRecord *>(
 			calloc(COMPUTE_PIPELINE_RECORDS, sizeof(ComputePipelineRecord)));
+	graphics_records = static_cast<GraphicsPipelineRecord *>(
+			calloc(GRAPHICS_PIPELINE_RECORDS, sizeof(GraphicsPipelineRecord)));
 	cookie.store(0);
 }
 
@@ -803,6 +805,169 @@ bool Device::resolve_compute_pipeline_record(const ComputePipelineRecord &record
 	compile.subgroup_size_tag = record.subgroup_size_tag;
 	compile.cache             = legacy_pipeline_cache;
 	CommandBuffer::update_hash_compute_pipeline(compile);
+	return compile.hash == record.pipeline_hash;
+}
+
+void Device::record_graphics_pipeline(const DeferredPipelineCompile &compile)
+{
+	GraphicsPipelineRecord *r;
+	unsigned i;
+	uint32_t slot;
+
+	/* A pass that cannot be made again is not one to build ahead for. */
+	if (!compile.compatible_render_pass->get_signature().recordable)
+		return;
+	slot = graphics_records_claimed.fetch_add(1);
+	if (!graphics_records || slot >= GRAPHICS_PIPELINE_RECORDS)
+		return;
+	r = &graphics_records[slot];
+	r->program_hash     = compile.program->get_hash();
+	r->pipeline_hash    = compile.hash;
+	r->render_pass_hash = compile.compatible_render_pass->get_hash();
+	for (i = 0; i < 4; i++)
+		r->static_words[i] = compile.static_state.words[i];
+	for (i = 0; i < VULKAN_NUM_TOTAL_SPEC_CONSTANTS; i++)
+		r->spec_constants[i] = compile.potential_static_state.spec_constants[i];
+	r->spec_masks        = compile.potential_static_state.spec_constant_mask |
+	                       (uint32_t(compile.potential_static_state.internal_spec_constant_mask) << 8);
+	r->subgroup_size_tag = compile.subgroup_size_tag;
+	r->subpass_index     = compile.subpass_index;
+	memcpy(r->blend_constants, compile.potential_static_state.blend_constants, sizeof(r->blend_constants));
+	for (i = 0; i < VULKAN_NUM_VERTEX_ATTRIBS; i++)
+	{
+		r->attribs[i][0] = compile.attribs[i].binding;
+		r->attribs[i][1] = uint32_t(compile.attribs[i].format);
+		r->attribs[i][2] = compile.attribs[i].offset;
+	}
+	for (i = 0; i < VULKAN_NUM_VERTEX_BUFFERS; i++)
+	{
+		r->strides[i]     = uint32_t(compile.strides[i]);
+		r->input_rates[i] = uint32_t(compile.input_rates[i]);
+	}
+	r->pass = compile.compatible_render_pass->get_signature();
+	graphics_records_written.fetch_add(1);
+}
+
+unsigned Device::get_graphics_pipeline_records(const GraphicsPipelineRecord **records) const
+{
+	uint32_t n = graphics_records_written.load();
+	*records = graphics_records;
+	if (!graphics_records)
+		return 0;
+	return n < GRAPHICS_PIPELINE_RECORDS ? n : GRAPHICS_PIPELINE_RECORDS;
+}
+
+/* A 1x1 attachment of @format: what a listed pass is made from again. */
+static ImageHandle render_pass_stand_in(Device &device, uint32_t format, uint32_t samples, bool lazy)
+{
+	ImageCreateInfo info = lazy
+		? ImageCreateInfo::transient_render_target(1, 1, VkFormat(format))
+		: ImageCreateInfo::render_target(1, 1, VkFormat(format));
+	info.samples        = VkSampleCountFlagBits(samples ? samples : 1);
+	info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	return device.create_image(info, nullptr);
+}
+
+const RenderPass *Device::recreate_render_pass(const RenderPassSignature &sig)
+{
+	ImageHandle images[VULKAN_NUM_ATTACHMENTS + 1];
+	RenderPassInfo::Subpass subpasses[RENDER_PASS_SIGNATURE_SUBPASSES];
+	RenderPassInfo info;
+	unsigned i, j;
+	const unsigned num_attachments = sig.num_color + (sig.depth_format != VK_FORMAT_UNDEFINED ? 1u : 0u);
+
+	/* (the list's checks make these hold; a pass is not made from less) */
+	if (!sig.recordable || sig.num_color > VULKAN_NUM_ATTACHMENTS || !num_attachments
+	    || sig.num_subpasses > RENDER_PASS_SIGNATURE_SUBPASSES)
+		return nullptr;
+	for (i = 0; i < sig.num_subpasses; i++)
+	{
+		const auto &s = sig.subpasses[i];
+		if (s.num_color > VULKAN_NUM_ATTACHMENTS || s.num_input > VULKAN_NUM_ATTACHMENTS
+		    || s.num_resolve > VULKAN_NUM_ATTACHMENTS || s.depth_mode > uint32_t(RenderPassInfo::DepthStencil::ReadWrite))
+			return nullptr;
+		subpasses[i].num_color_attachments   = s.num_color;
+		subpasses[i].num_input_attachments   = s.num_input;
+		subpasses[i].num_resolve_attachments = s.num_resolve;
+		subpasses[i].depth_stencil_mode      = RenderPassInfo::DepthStencil(s.depth_mode);
+		for (j = 0; j < s.num_color; j++)
+			if ((subpasses[i].color_attachments[j] = s.color[j]) >= num_attachments)
+				return nullptr;
+		for (j = 0; j < s.num_input; j++)
+			if ((subpasses[i].input_attachments[j] = s.input[j]) >= num_attachments)
+				return nullptr;
+		for (j = 0; j < s.num_resolve; j++)
+			if ((subpasses[i].resolve_attachments[j] = s.resolve[j]) >= num_attachments)
+				return nullptr;
+	}
+
+	for (i = 0; i < sig.num_color; i++)
+	{
+		images[i] = render_pass_stand_in(*this, sig.formats[i], sig.samples[i], (sig.lazy >> i) & 1);
+		if (!images[i])
+			return nullptr;
+		info.color_attachments[i] = &images[i]->get_view();
+	}
+	if (sig.depth_format != VK_FORMAT_UNDEFINED)
+	{
+		images[VULKAN_NUM_ATTACHMENTS] = render_pass_stand_in(*this, sig.depth_format,
+		                                                      sig.samples[VULKAN_NUM_ATTACHMENTS],
+		                                                      (sig.lazy >> sig.num_color) & 1);
+		if (!images[VULKAN_NUM_ATTACHMENTS])
+			return nullptr;
+		info.depth_stencil = &images[VULKAN_NUM_ATTACHMENTS]->get_view();
+	}
+	info.num_color_attachments = sig.num_color;
+	info.op_flags              = sig.op_flags;
+	info.num_subpasses         = sig.num_subpasses;
+	info.subpasses             = sig.num_subpasses ? subpasses : nullptr;
+	/* The stand-ins go once this returns; the pass holds none of them. */
+	return &request_render_pass(info, true);
+}
+
+bool Device::resolve_graphics_pipeline_record(const GraphicsPipelineRecord &record,
+                                              DeferredPipelineCompile &compile)
+{
+	unsigned i;
+	Program *program = programs.find(record.program_hash);
+	const RenderPass *pass;
+
+	if (!program || program->get_shader(ShaderStage::Compute) || !program->get_pipeline_layout())
+		return false;
+	pass = render_passes.find(record.render_pass_hash);
+	if (!pass)
+		pass = recreate_render_pass(record.pass);
+	if (!pass || pass->get_hash() != record.render_pass_hash
+	    || record.subpass_index >= pass->get_num_subpasses())
+		return false;
+
+	compile = DeferredPipelineCompile();
+	compile.program               = program;
+	compile.layout                = program->get_pipeline_layout();
+	compile.compatible_render_pass = pass;
+	compile.subpass_index         = record.subpass_index;
+	for (i = 0; i < 4; i++)
+		compile.static_state.words[i] = record.static_words[i];
+	for (i = 0; i < VULKAN_NUM_TOTAL_SPEC_CONSTANTS; i++)
+		compile.potential_static_state.spec_constants[i] = record.spec_constants[i];
+	compile.potential_static_state.spec_constant_mask          = uint8_t(record.spec_masks & 0xff);
+	compile.potential_static_state.internal_spec_constant_mask = uint8_t((record.spec_masks >> 8) & 0xff);
+	memcpy(compile.potential_static_state.blend_constants, record.blend_constants,
+	       sizeof(compile.potential_static_state.blend_constants));
+	for (i = 0; i < VULKAN_NUM_VERTEX_ATTRIBS; i++)
+	{
+		compile.attribs[i].binding = record.attribs[i][0];
+		compile.attribs[i].format  = VkFormat(record.attribs[i][1]);
+		compile.attribs[i].offset  = record.attribs[i][2];
+	}
+	for (i = 0; i < VULKAN_NUM_VERTEX_BUFFERS; i++)
+	{
+		compile.strides[i]     = record.strides[i];
+		compile.input_rates[i] = VkVertexInputRate(record.input_rates[i]);
+	}
+	compile.subgroup_size_tag = record.subgroup_size_tag;
+	compile.cache             = legacy_pipeline_cache;
+	CommandBuffer::update_hash_graphics_pipeline(compile, nullptr);
 	return compile.hash == record.pipeline_hash;
 }
 
@@ -2191,6 +2356,8 @@ Device::~Device()
 		table->vkDestroyPipelineCache(device, legacy_pipeline_cache, nullptr);
 	free(compute_records);
 	compute_records = nullptr;
+	free(graphics_records);
+	graphics_records = nullptr;
 
 	framebuffer_allocator.clear();
 	transient_allocator.clear();

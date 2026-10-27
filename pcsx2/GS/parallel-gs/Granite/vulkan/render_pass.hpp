@@ -87,6 +87,35 @@ struct RenderPassInfo
 	unsigned num_subpasses = 0;
 };
 
+/* What a compatible render pass is made from, without its images: the
+ * attachment formats and sample counts, which of them are transient, and
+ * the subpasses. Compatibility goes by these alone, so 1x1 stand-ins for
+ * the attachments make the same pass again. */
+enum { RENDER_PASS_SIGNATURE_SUBPASSES = 4 };
+struct RenderPassSignature
+{
+	uint32_t formats[VULKAN_NUM_ATTACHMENTS];
+	uint32_t samples[VULKAN_NUM_ATTACHMENTS + 1]; /* the depth one last */
+	uint32_t num_color;
+	uint32_t depth_format;  /* VK_FORMAT_UNDEFINED: none */
+	uint32_t lazy;          /* transient attachments, depth after the colour ones */
+	uint32_t op_flags;
+	uint32_t num_subpasses; /* 0: the default one */
+	/* 0 when it cannot be made again from this: a swapchain image,
+	 * more than one layer, more subpasses than are kept. */
+	uint32_t recordable;
+	struct
+	{
+		uint32_t color[VULKAN_NUM_ATTACHMENTS];
+		uint32_t input[VULKAN_NUM_ATTACHMENTS];
+		uint32_t resolve[VULKAN_NUM_ATTACHMENTS];
+		uint32_t num_color;
+		uint32_t num_input;
+		uint32_t num_resolve;
+		uint32_t depth_mode;
+	} subpasses[RENDER_PASS_SIGNATURE_SUBPASSES];
+};
+
 class RenderPass : public HashedObject<RenderPass>, public NoCopyNoMove
 {
 public:
@@ -113,6 +142,11 @@ public:
 	VkRenderPass get_render_pass() const
 	{
 		return render_pass;
+	}
+
+	const RenderPassSignature &get_signature() const
+	{
+		return signature;
 	}
 
 	uint32_t get_sample_count(unsigned subpass) const
@@ -168,6 +202,7 @@ private:
 	VkFormat color_attachments[VULKAN_NUM_ATTACHMENTS] = {};
 	VkFormat depth_stencil = VK_FORMAT_UNDEFINED;
 	std::vector<SubpassInfo> subpasses_info;
+	RenderPassSignature signature;
 
 	void setup_subpasses(const VkRenderPassCreateInfo2 &create_info);
 };

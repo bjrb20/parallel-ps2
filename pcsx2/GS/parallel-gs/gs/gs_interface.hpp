@@ -229,6 +229,10 @@ struct GSOptions
 	 * other variant; read during init only. */
 	const Vulkan::Device::ComputePipelineRecord *prebuild = nullptr;
 	unsigned num_prebuild = 0;
+	/* The same for the graphics pipelines, whose render passes are made
+	 * again during init. */
+	const Vulkan::Device::GraphicsPipelineRecord *prebuild_graphics = nullptr;
+	unsigned num_prebuild_graphics = 0;
 };
 
 // Pragmatic hacks which may or may not be useful.

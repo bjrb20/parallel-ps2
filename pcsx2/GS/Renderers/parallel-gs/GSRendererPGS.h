@@ -39,13 +39,15 @@ private:
 	Vulkan::Device dev;
 	ParallelGS::GSInterface iface;
 
-	/* The device's pipeline cache and the list of compute pipelines in
-	 * use, as read at Init: kept to merge into, and to leave a cache
-	 * file that has not changed alone. */
+	/* The device's pipeline cache and the list of pipelines in use, as
+	 * read at Init: kept to merge into, and to leave a cache file that
+	 * has not changed alone. */
 	uint8_t *pipeline_blob       = nullptr;
 	size_t pipeline_blob_size    = 0;
 	Vulkan::Device::ComputePipelineRecord *pipeline_list = nullptr;
 	unsigned pipeline_list_count = 0;
+	Vulkan::Device::GraphicsPipelineRecord *pipeline_list_graphics = nullptr;
+	unsigned pipeline_list_graphics_count = 0;
 	bool pipelines_persist       = false;
 	void load_pipelines();
 	void save_pipelines();
