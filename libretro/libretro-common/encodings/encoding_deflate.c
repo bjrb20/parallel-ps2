@@ -418,11 +418,18 @@ struct rinflate
    /* stored-block bookkeeping */
    uint32_t       stored_len;
 
-   /* huffman tables for the current dynamic/fixed block */
+   /* huffman tables of the last dynamic block */
    struct rinf_huff lencode;
    struct rinf_huff distcode;
-   /* lencode/distcode currently hold the RFC 1951 fixed tables. */
-   int              fixed_loaded;
+   /* The RFC 1951 fixed tables, lit/len then distance: built on the
+    * first fixed block and kept for the decoder's life, resets
+    * included, so streams that mix fixed and dynamic blocks never
+    * rebuild them. NULL until then, so a decoder that never meets a
+    * fixed block carries nothing extra. */
+   struct rinf_huff *fixed;
+   /* The current block's tables: fixed[] or lencode/distcode. */
+   const struct rinf_huff *lc;
+   const struct rinf_huff *dc;
    int              have_tables;
 
    /* dynamic-table construction scratch, persisted across suspends */
@@ -561,7 +568,7 @@ static int rinf_build(struct rinf_huff *h, const uint8_t *lengths, int num)
 
 /* Decode one symbol; returns -1 if not enough bits are buffered yet
  * (caller should suspend), otherwise the symbol. */
-static int rinf_decode(struct rinflate *s, struct rinf_huff *h)
+static int rinf_decode(struct rinflate *s, const struct rinf_huff *h)
 {
    int len, sym;
    uint32_t rev, cur;
@@ -697,30 +704,45 @@ static void rinf_pack_dist(struct rinf_huff *h)
  * dynamic block clears the flag when it builds over them. */
 static void rinf_fixed_tables(struct rinflate *s)
 {
-   uint8_t ll[288], dd[30];
-   int i;
-
-   if (s->fixed_loaded)
+   if (!s->fixed)
    {
-      s->have_tables = 1;
-      return;
+      uint8_t ll[288], dd[30];
+      struct rinf_huff *t;
+      int i;
+
+      for (i = 0;   i < 144; i++)
+         ll[i] = 8;
+      for (i = 144; i < 256; i++)
+         ll[i] = 9;
+      for (i = 256; i < 280; i++)
+         ll[i] = 7;
+      for (i = 280; i < 288; i++)
+         ll[i] = 8;
+      for (i = 0;   i < 30;  i++)
+         dd[i] = 5;
+      /* Without the memory, built where a dynamic block's go, as each
+       * fixed block did before. */
+      t = (struct rinf_huff*)malloc(2 * sizeof(*t));
+      if (!t)
+      {
+         rinf_build(&s->lencode, ll, 288);
+         rinf_build(&s->distcode, dd, 30);
+         rinf_pack_len(&s->lencode);
+         rinf_pack_dist(&s->distcode);
+         s->lc          = &s->lencode;
+         s->dc          = &s->distcode;
+         s->have_tables = 1;
+         return;
+      }
+      rinf_build(&t[0], ll, 288);
+      rinf_build(&t[1], dd, 30);
+      rinf_pack_len(&t[0]);
+      rinf_pack_dist(&t[1]);
+      s->fixed = t;
    }
-   for (i = 0;   i < 144; i++)
-      ll[i] = 8;
-   for (i = 144; i < 256; i++)
-      ll[i] = 9;
-   for (i = 256; i < 280; i++)
-      ll[i] = 7;
-   for (i = 280; i < 288; i++)
-      ll[i] = 8;
-   for (i = 0;   i < 30;  i++)
-      dd[i] = 5;
-   rinf_build(&s->lencode, ll, 288);
-   rinf_build(&s->distcode, dd, 30);
-   rinf_pack_len(&s->lencode);
-   rinf_pack_dist(&s->distcode);
-   s->have_tables  = 1;
-   s->fixed_loaded = 1;
+   s->lc          = &s->fixed[0];
+   s->dc          = &s->fixed[1];
+   s->have_tables = 1;
 }
 
 /* emit a byte to the output + window, updating adler */
@@ -801,7 +823,13 @@ void *rinflate_new(int window_bits)
    return s;
 }
 
-void rinflate_free(void *data) { free(data); }
+void rinflate_free(void *data)
+{
+   struct rinflate *s = (struct rinflate*)data;
+   if (s)
+      free(s->fixed);
+   free(s);
+}
 
 void rinflate_reset(void *data, int window_bits)
 {
@@ -816,10 +844,10 @@ void rinflate_reset(void *data, int window_bits)
     * a back-reference is only resolved out of the ring after a bounds
     * check against out_pos + wprior, so with wprior 0 no stale byte is
     * reachable, exactly as for a fresh instance whose window happens
-    * to be zeroed. The tables are safe because have_tables and
-    * fixed_loaded are cleared, so any stream must rebuild them before
-    * a symbol is decoded, and rinf_build clears each table's fast
-    * lookup as it goes.
+    * to be zeroed. The tables are safe because have_tables is cleared,
+    * so every block picks its tables before a symbol is decoded, and
+    * rinf_build clears each table's fast lookup as it goes. The fixed
+    * tables are the decoder's own and stay built.
     *
     * Everything else is set to the same value calloc would have
     * produced. Fields are listed rather than memset in bulk so that
@@ -855,7 +883,6 @@ void rinflate_reset(void *data, int window_bits)
    s->skip_bits        = 0;
    s->stored_len       = 0;
 
-   s->fixed_loaded     = 0;
    s->have_tables      = 0;
 
    s->hlit             = 0;
@@ -1287,13 +1314,14 @@ int rinflate_process(void *data, size_t *read, size_t *wrote)
                }
             }
             /* build lit/len and dist tables */
-            s->fixed_loaded = 0;
             if (!rinf_build(&s->lencode, s->lengths, s->hlit))
                { s->error = 1; goto error; }
             if (!rinf_build(&s->distcode, s->lengths + s->hlit, s->hdist))
                { s->error = 1; goto error; }
             rinf_pack_len(&s->lencode);
             rinf_pack_dist(&s->distcode);
+            s->lc          = &s->lencode;
+            s->dc          = &s->distcode;
             s->have_tables = 1;
             s->copy_active = 0;
             s->phase = RINF_BLOCK_DATA;
@@ -1330,8 +1358,8 @@ fast_again:
                size_t   out_pos      = s->out_pos;
                const uint8_t *in     = s->in;
                uint8_t       *out    = s->out;
-               const uint32_t *plen  = s->lencode.pfast;
-               const uint32_t *pdist = s->distcode.pfast;
+               const uint32_t *plen  = s->lc->pfast;
+               const uint32_t *pdist = s->dc->pfast;
                int      done_fast    = 0;
 
                /* The output guard reserves the longest match plus the
@@ -1439,7 +1467,7 @@ fast_again:
                      s->bitbuf = bitbuf;
                      s->bitcnt = bitcnt;
                      s->in_pos = in_pos;
-                     sym       = rinf_decode(s, &s->lencode);
+                     sym       = rinf_decode(s, s->lc);
                      bitbuf    = s->bitbuf;
                      bitcnt    = s->bitcnt;
                      in_pos    = s->in_pos;
@@ -1547,7 +1575,7 @@ fast_again:
                            s->bitbuf = bitbuf;
                            s->bitcnt = bitcnt;
                            s->in_pos = in_pos;
-                           dsym      = rinf_decode(s, &s->distcode);
+                           dsym      = rinf_decode(s, s->dc);
                            bitbuf    = s->bitbuf;
                            bitcnt    = s->bitcnt;
                            in_pos    = s->in_pos;
@@ -1766,7 +1794,7 @@ fast_again:
                }
                if (s->ld_step == 0)
                {
-                  int sym = rinf_decode(s, &s->lencode);
+                  int sym = rinf_decode(s, s->lc);
                   if (sym == -1)
                      goto suspend;
                   if (sym < 0)
@@ -1806,7 +1834,7 @@ fast_again:
 
                if (s->ld_step == 2)
                {
-                  int dsym = rinf_decode(s, &s->distcode);
+                  int dsym = rinf_decode(s, s->dc);
                   if (dsym == -1) goto suspend;
                   if (dsym < 0 || dsym >= 30) { s->error = 1; goto error; }
                   s->ld_distsym = dsym;
