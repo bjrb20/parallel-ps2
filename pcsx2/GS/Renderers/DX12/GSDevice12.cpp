@@ -991,21 +991,27 @@ bool GSDevice12::Create()
 		return false;
 	}
 
+	/* The utility pipelines, then the listed draw pipelines, from here on
+	 * a thread of their own; without one, the utility pipelines here. */
+	const bool warming = StartTFXWarm();
+
 	if (!CreateBuffers())
 		return false;
 
-	if (    !CompileConvertPipelines()   ||
-		!CompileInterlacePipelines() || 
-		!CompileMergePipelines()     ||
-		!CompilePostProcessingPipelines())
+	if (!warming)
 	{
-		log_cb(RETRO_LOG_ERROR, "Failed to compile utility pipelines\n");
-		return false;
+		for (u32 slot = 0; slot < UTIL_COUNT; slot++)
+		{
+			if (!(m_utility[slot] = CreateUtilityPipeline(slot)))
+			{
+				log_cb(RETRO_LOG_ERROR, "Failed to compile utility pipelines\n");
+				return false;
+			}
+		}
 	}
 
 	InitializeState();
 	InitializeSamplers();
-	StartTFXWarm();
 	return true;
 }
 
@@ -1229,7 +1235,7 @@ void GSDevice12::StretchRect(GSTexture* sTex, const GSVector4& sRect, GSTexture*
 	ShaderConvert shader /* = ShaderConvert::COPY */, bool linear /* = true */)
 {
 	DoStretchRect(static_cast<GSTexture12*>(sTex), sRect, static_cast<GSTexture12*>(dTex), dRect,
-		m_convert[static_cast<int>(shader)].get(), linear, ShaderConvertWriteMask(shader) == 0xf);
+		UtilityPipeline(UTIL_CONVERT + static_cast<int>(shader)), linear, ShaderConvertWriteMask(shader) == 0xf);
 }
 
 void GSDevice12::StretchRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect, bool red,
@@ -1239,7 +1245,7 @@ void GSDevice12::StretchRect(GSTexture* sTex, const GSVector4& sRect, GSTexture*
 	int rta_offset = (shader == ShaderConvert::RTA_CORRECTION) ? 16 : 0;
 	const bool allow_discard = (index == 0xf);
 	DoStretchRect(static_cast<GSTexture12*>(sTex), sRect, static_cast<GSTexture12*>(dTex), dRect,
-		m_color_copy[index + rta_offset].get(), false, allow_discard);
+		UtilityPipeline(UTIL_COLOR_COPY + index + rta_offset), false, allow_discard);
 }
 
 /* How many indices the frontend cycles through: the mask is a mask, so
@@ -1381,7 +1387,7 @@ void GSDevice12::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u
 	const GSVector4 dRect(0, 0, dSize * samples, samples);
 	const ShaderConvert shader = (dSize == 16) ? ShaderConvert::CLUT_4 : ShaderConvert::CLUT_8;
 	DoStretchRect(static_cast<GSTexture12*>(sTex), GSVector4::zero(), static_cast<GSTexture12*>(dTex), dRect,
-		m_convert[static_cast<int>(shader)].get(), false, true);
+		UtilityPipeline(UTIL_CONVERT + static_cast<int>(shader)), false, true);
 }
 
 void GSDevice12::ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM)
@@ -1401,7 +1407,7 @@ void GSDevice12::ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offs
 	const GSVector4 dRect(0, 0, dTex->GetWidth(), dTex->GetHeight());
 	const ShaderConvert shader = ShaderConvert::RGBA_TO_8I;
 	DoStretchRect(static_cast<GSTexture12*>(sTex), GSVector4::zero(), static_cast<GSTexture12*>(dTex), dRect,
-		m_convert[static_cast<int>(shader)].get(), false, true);
+		UtilityPipeline(UTIL_CONVERT + static_cast<int>(shader)), false, true);
 }
 
 void GSDevice12::FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect)
@@ -1422,7 +1428,7 @@ void GSDevice12::FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32
 
 	const ShaderConvert shader = ShaderConvert::DOWNSAMPLE_COPY;
 	DoStretchRect(static_cast<GSTexture12*>(sTex), GSVector4::zero(), static_cast<GSTexture12*>(dTex), dRect,
-		m_convert[static_cast<int>(shader)].get(), false, true);
+		UtilityPipeline(UTIL_CONVERT + static_cast<int>(shader)), false, true);
 }
 
 void GSDevice12::MoveTexels(GSTexture* sTex, GSTexture* dTex, const GSVector4& dRect, const MoveTexelsConstants& cb)
@@ -1432,7 +1438,7 @@ void GSDevice12::MoveTexels(GSTexture* sTex, GSTexture* dTex, const GSVector4& d
 
 	const ShaderConvert shader = ShaderConvert::MOVE_TEXELS;
 	DoStretchRect(static_cast<GSTexture12*>(sTex), GSVector4::zero(), static_cast<GSTexture12*>(dTex), dRect,
-		m_convert[static_cast<int>(shader)].get(), false, true);
+		UtilityPipeline(UTIL_CONVERT + static_cast<int>(shader)), false, true);
 }
 
 void GSDevice12::DrawMultiStretchRects(
@@ -1552,7 +1558,7 @@ void GSDevice12::DoMultiStretchRects(
 	SetUtilityTexture(rects[0].src, rects[0].linear ? m_linear_sampler_cpu : m_point_sampler_cpu);
 
 	int rta_bit = (shader == ShaderConvert::RTA_CORRECTION) ? 16 : 0;
-	SetPipeline((rects[0].wmask.wrgba != 0xf) ? m_color_copy[rects[0].wmask.wrgba | rta_bit].get() : m_convert[static_cast<int>(shader)].get());
+	SetPipeline((rects[0].wmask.wrgba != 0xf) ? UtilityPipeline(UTIL_COLOR_COPY + (rects[0].wmask.wrgba | rta_bit)) : UtilityPipeline(UTIL_CONVERT + static_cast<int>(shader)));
 
 	if (ApplyUtilityState())
 		DrawIndexedPrimitive();
@@ -1695,7 +1701,7 @@ void GSDevice12::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, 
 			D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_NO_ACCESS, D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_NO_ACCESS,
 			D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_NO_ACCESS, GSVector4::unorm8(c));
 		SetUtilityRootSignature();
-		SetPipeline(m_convert[static_cast<int>(ShaderConvert::COPY)].get());
+		SetPipeline(UtilityPipeline(UTIL_CONVERT + static_cast<int>(ShaderConvert::COPY)));
 		DrawStretchRect(sRect[1], PMODE.SLBG ? dRect[2] : dRect[1], dsize);
 		dTex->SetState(GSTexture::State::Dirty);
 		dcleared = true;
@@ -1716,7 +1722,7 @@ void GSDevice12::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, 
 		if (dcleared)
 		{
 			SetUtilityRootSignature();
-			SetPipeline(m_convert[static_cast<int>(ShaderConvert::YUV)].get());
+			SetPipeline(UtilityPipeline(UTIL_CONVERT + static_cast<int>(ShaderConvert::YUV)));
 			DrawStretchRect(full_r, dRect[2], fbsize);
 		}
 		EndRenderPass();
@@ -1750,7 +1756,7 @@ void GSDevice12::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, 
 		// 1st output is enabled. It must be blended
 		SetUtilityRootSignature();
 		SetUtilityTexture(sTex[0], sampler);
-		SetPipeline(m_merge[PMODE.MMOD].get());
+		SetPipeline(UtilityPipeline(UTIL_MERGE + PMODE.MMOD));
 		DrawStretchRect(sRect[0], dRect[0], dTex->GetSize());
 	}
 
@@ -1758,7 +1764,7 @@ void GSDevice12::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, 
 	{
 		EndRenderPass();
 		SetUtilityRootSignature();
-		SetPipeline(m_convert[static_cast<int>(ShaderConvert::YUV)].get());
+		SetPipeline(UtilityPipeline(UTIL_CONVERT + static_cast<int>(ShaderConvert::YUV)));
 		SetUtilityTexture(dTex, sampler);
 		OMSetRenderTargets(sTex[2], nullptr, fbarea);
 		BeginRenderPass(D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_PRESERVE, D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE);
@@ -1784,7 +1790,7 @@ void GSDevice12::DoInterlace(GSTexture* sTex, const GSVector4& sRect, GSTexture*
 	SetUtilityRootSignature();
 	SetUtilityTexture(sTex, linear ? m_linear_sampler_cpu : m_point_sampler_cpu);
 	BeginRenderPassForStretchRect(static_cast<GSTexture12*>(dTex), dTex->GetRect(), clamped_rc, false);
-	SetPipeline(m_interlace[static_cast<int>(shader)].get());
+	SetPipeline(UtilityPipeline(UTIL_INTERLACE + static_cast<int>(shader)));
 	SetUtilityPushConstants(&cb, sizeof(cb));
 	DrawStretchRect(sRect, dRect, dTex->GetSize());
 	EndRenderPass();
@@ -2102,24 +2108,75 @@ bool GSDevice12::CreateRootSignatures()
 	return true;
 }
 
-bool GSDevice12::CompileConvertPipelines()
+/* The pixel shader of a utility pipeline: its source, and its entry
+ * point (written to @entry when it has to be made). The vertex shader is
+ * convert's vs_main for every one. */
+const char* GSDevice12::UtilityPixelShader(u32 slot, const char** source, char* entry, size_t entry_size)
 {
-	m_convert_vs = GetUtilityVertexShader(convert_fx_shader_raw, "vs_main");
-	if (!m_convert_vs)
-		return false;
+	*source = convert_fx_shader_raw;
+	if (slot < UTIL_COLOR_COPY)
+		return shaderName(static_cast<ShaderConvert>(slot - UTIL_CONVERT));
+	if (slot < UTIL_HDR_SETUP)
+		return shaderName((slot - UTIL_COLOR_COPY) < 16 ? ShaderConvert::COPY : ShaderConvert::RTA_CORRECTION);
+	if (slot < UTIL_HDR_FINISH)
+		return shaderName(ShaderConvert::COLCLIP_INIT);
+	if (slot < UTIL_DATE_SETUP)
+		return shaderName(ShaderConvert::COLCLIP_RESOLVE);
+	if (slot < UTIL_INTERLACE)
+	{
+		snprintf(entry, entry_size, "ps_stencil_image_init_%u", (slot - UTIL_DATE_SETUP) % 4);
+		return entry;
+	}
+	if (slot < UTIL_MERGE)
+	{
+		*source = interlace_fx_shader_raw;
+		snprintf(entry, entry_size, "ps_main%u", slot - UTIL_INTERLACE);
+		return entry;
+	}
+	*source = merge_fx_shader_raw;
+	snprintf(entry, entry_size, "ps_main%u", slot - UTIL_MERGE);
+	return entry;
+}
 
-	D3D12::GraphicsPipelineBuilder gpb;
-	gpb.SetRootSignature(m_utility_root_signature.get());
+/* The description of utility pipeline @slot. The convert family shared
+ * one builder, each pipeline made from what the ones before it left set,
+ * so its calls are made again in the same order up to @slot: the
+ * description comes out byte for byte as it did, and with it the key
+ * the driver's cached blob is found under. Every pixel shader set on the
+ * way is @ps, which is the one in force when @slot's is made. Reads
+ * nothing of the device's but @rs: the warm-up thread calls it too. */
+bool GSDevice12::UtilityPipelineDesc(D3D12::GraphicsPipelineBuilder& gpb, u32 slot, ID3D12RootSignature* rs,
+	const ID3DBlob* vs, const ID3DBlob* ps)
+{
+	if (slot >= UTIL_INTERLACE)
+	{
+		const bool merge = slot >= UTIL_MERGE;
+		AddUtilityVertexAttributes(gpb);
+		gpb.SetRootSignature(rs);
+		gpb.SetNoCullRasterizationState();
+		gpb.SetNoDepthTestState();
+		if (!merge)
+			gpb.SetNoBlendingState();
+		gpb.SetRenderTarget(0, DXGI_FORMAT_R8G8B8A8_UNORM);
+		gpb.SetVertexShader(vs);
+		gpb.SetPixelShader(ps);
+		if (merge)
+			gpb.SetBlendState(0, true, D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_INV_SRC_ALPHA,
+				D3D12_BLEND_OP_ADD, D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD);
+		return slot < UTIL_COUNT;
+	}
+
+	gpb.SetRootSignature(rs);
 	AddUtilityVertexAttributes(gpb);
 	gpb.SetNoCullRasterizationState();
 	gpb.SetNoBlendingState();
-	gpb.SetVertexShader(m_convert_vs.get());
+	gpb.SetVertexShader(vs);
 
 	for (ShaderConvert i = ShaderConvert::COPY; static_cast<int>(i) < static_cast<int>(ShaderConvert::Count);
 		 i = static_cast<ShaderConvert>(static_cast<int>(i) + 1))
 	{
 		const bool depth = HasDepthOutput(i);
-		const int index = static_cast<int>(i);
+		const u32 index = static_cast<u32>(i);
 
 		switch (i)
 		{
@@ -2167,77 +2224,54 @@ bool GSDevice12::CompileConvertPipelines()
 		}
 
 		gpb.SetColorWriteMask(0, ShaderConvertWriteMask(i));
-
-		ComPtr<ID3DBlob> ps(GetUtilityPixelShader(convert_fx_shader_raw, shaderName(i)));
-		if (!ps)
-			return false;
-
-		gpb.SetPixelShader(ps.get());
-
-		m_convert[index] = gpb.Create(m_device.get(), m_shader_cache, false);
-		if (!m_convert[index])
-			return false;
+		gpb.SetPixelShader(ps);
+		if (slot == UTIL_CONVERT + index)
+			return true;
 
 		if (i == ShaderConvert::COPY)
 		{
-			// compile color copy pipelines
+			// color copy pipelines
 			gpb.SetRenderTarget(0, DXGI_FORMAT_R8G8B8A8_UNORM);
 			gpb.SetDepthStencilFormat(DXGI_FORMAT_UNKNOWN);
 			for (u32 j = 0; j < 16; j++)
 			{
 				gpb.SetBlendState(0, false, D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD, D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD, static_cast<u8>(j));
-				m_color_copy[j] = gpb.Create(m_device.get(), m_shader_cache, false);
-				if (!m_color_copy[j])
-					return false;
+				if (slot == UTIL_COLOR_COPY + j)
+					return true;
 			}
 		}
 		else if (i == ShaderConvert::RTA_CORRECTION)
 		{
-			// compile color copy pipelines
+			// color copy pipelines
 			gpb.SetRenderTarget(0, DXGI_FORMAT_R8G8B8A8_UNORM);
 			gpb.SetDepthStencilFormat(DXGI_FORMAT_UNKNOWN);
-
-			ComPtr<ID3DBlob> ps(GetUtilityPixelShader(convert_fx_shader_raw, shaderName(i)));
-			if (!ps)
-				return false;
-
-			gpb.SetPixelShader(ps.get());
-
+			gpb.SetPixelShader(ps);
 			for (u32 j = 16; j < 32; j++)
 			{
 				gpb.SetBlendState(0, false, D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD, D3D12_BLEND_ONE,
 					D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD, static_cast<u8>(j - 16));
-				m_color_copy[j] = gpb.Create(m_device.get(), m_shader_cache, false);
-				if (!m_color_copy[j])
-					return false;
+				if (slot == UTIL_COLOR_COPY + j)
+					return true;
 			}
 		}
 		else if (i == ShaderConvert::COLCLIP_INIT || i == ShaderConvert::COLCLIP_RESOLVE)
 		{
 			const bool is_setup = i == ShaderConvert::COLCLIP_INIT;
-			std::array<ComPtr<ID3D12PipelineState>, 2>& arr = is_setup ? m_hdr_setup_pipelines : m_hdr_finish_pipelines;
 			for (u32 ds = 0; ds < 2; ds++)
 			{
 				gpb.SetRenderTarget(0, is_setup ? DXGI_FORMAT_R16G16B16A16_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM);
 				gpb.SetDepthStencilFormat(ds ? DXGI_FORMAT_D32_FLOAT_S8X24_UINT : DXGI_FORMAT_UNKNOWN);
-				arr[ds] = gpb.Create(m_device.get(), m_shader_cache, false);
-				if (!arr[ds])
-					return false;
+				if (slot == (is_setup ? UTIL_HDR_SETUP : UTIL_HDR_FINISH) + ds)
+					return true;
 			}
 		}
 	}
 
 	for (u32 datm = 0; datm < 4; datm++)
 	{
-		char var[64];
-		snprintf(var, sizeof(var), "ps_stencil_image_init_%d", datm);
-		ComPtr<ID3DBlob> ps(GetUtilityPixelShader(convert_fx_shader_raw, var));
-		if (!ps)
-			return false;
-
-		gpb.SetRootSignature(m_utility_root_signature.get());
+		gpb.SetRootSignature(rs);
 		gpb.SetRenderTarget(0, DXGI_FORMAT_R32_FLOAT);
-		gpb.SetPixelShader(ps.get());
+		gpb.SetPixelShader(ps);
 		gpb.SetNoDepthTestState();
 		gpb.SetNoStencilState();
 		gpb.SetBlendState(0, false, D3D12_BLEND_ONE, D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD,
@@ -2246,82 +2280,46 @@ bool GSDevice12::CompileConvertPipelines()
 		for (u32 ds = 0; ds < 2; ds++)
 		{
 			gpb.SetDepthStencilFormat(ds ? DXGI_FORMAT_D32_FLOAT_S8X24_UINT : DXGI_FORMAT_UNKNOWN);
-			m_date_image_setup_pipelines[ds][datm] = gpb.Create(m_device.get(), m_shader_cache, false);
-			if (!m_date_image_setup_pipelines[ds][datm])
-				return false;
+			if (slot == UTIL_DATE_SETUP + ds * 4 + datm)
+				return true;
 		}
 	}
-
-	return true;
+	return false;
 }
 
-bool GSDevice12::CompileInterlacePipelines()
+/* A utility pipeline built here, through the shader cache. */
+GSDevice12::ComPtr<ID3D12PipelineState> GSDevice12::CreateUtilityPipeline(u32 slot)
 {
+	char entry_buf[32];
+	const char* source;
+	const char* entry = UtilityPixelShader(slot, &source, entry_buf, sizeof(entry_buf));
+	ComPtr<ID3DBlob> vs(GetUtilityVertexShader(convert_fx_shader_raw, strlen(convert_fx_shader_raw), "vs_main"));
+	ComPtr<ID3DBlob> ps(GetUtilityPixelShader(source, strlen(source), entry));
 	D3D12::GraphicsPipelineBuilder gpb;
-	AddUtilityVertexAttributes(gpb);
-	gpb.SetRootSignature(m_utility_root_signature.get());
-	gpb.SetNoCullRasterizationState();
-	gpb.SetNoDepthTestState();
-	gpb.SetNoBlendingState();
-	gpb.SetRenderTarget(0, DXGI_FORMAT_R8G8B8A8_UNORM);
-	gpb.SetVertexShader(m_convert_vs.get());
 
-	for (int i = 0; i < static_cast<int>(m_interlace.size()); i++)
+	if (!vs || !ps || !UtilityPipelineDesc(gpb, slot, m_utility_root_signature.get(), vs.get(), ps.get()))
+		return {};
+	return gpb.Create(m_device.get(), m_shader_cache, false);
+}
+
+/* A utility pipeline at its first use: the warm-up thread's, else built
+ * here. One that cannot be built at all leaves the device lost, as one
+ * that failed at the device's creation left it unmade. */
+ID3D12PipelineState* GSDevice12::MissingUtilityPipeline(u32 slot)
+{
+	if (m_tfx_warm)
 	{
-		ComPtr<ID3DBlob> ps(GetUtilityPixelShader(interlace_fx_shader_raw, FormatString::Format("ps_main%d", i).c_str()));
-		if (!ps)
-			return false;
-
-		gpb.SetPixelShader(ps.get());
-
-		m_interlace[i] = gpb.Create(m_device.get(), m_shader_cache, false);
-		if (!m_interlace[i])
-			return false;
+		CollectWarmedTFXPipelines(nullptr, nullptr);
+		if (m_utility[slot])
+			return m_utility[slot].get();
 	}
-
-	return true;
-}
-
-bool GSDevice12::CompileMergePipelines()
-{
-	D3D12::GraphicsPipelineBuilder gpb;
-	AddUtilityVertexAttributes(gpb);
-	gpb.SetRootSignature(m_utility_root_signature.get());
-	gpb.SetNoCullRasterizationState();
-	gpb.SetNoDepthTestState();
-	gpb.SetRenderTarget(0, DXGI_FORMAT_R8G8B8A8_UNORM);
-	gpb.SetVertexShader(m_convert_vs.get());
-
-	for (int i = 0; i < static_cast<int>(m_merge.size()); i++)
+	m_utility[slot] = CreateUtilityPipeline(slot);
+	if (!m_utility[slot])
 	{
-		ComPtr<ID3DBlob> ps(GetUtilityPixelShader(merge_fx_shader_raw, FormatString::Format("ps_main%d", i).c_str()));
-		if (!ps)
-			return false;
-
-		gpb.SetPixelShader(ps.get());
-		gpb.SetBlendState(0, true, D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_INV_SRC_ALPHA,
-			D3D12_BLEND_OP_ADD, D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD);
-
-		m_merge[i] = gpb.Create(m_device.get(), m_shader_cache, false);
-		if (!m_merge[i])
-			return false;
+		log_cb(RETRO_LOG_ERROR, "GS: utility pipeline %u failed to build\n", slot);
+		m_device_lost = true;
 	}
-
-	return true;
-}
-
-bool GSDevice12::CompilePostProcessingPipelines()
-{
-	D3D12::GraphicsPipelineBuilder gpb;
-	AddUtilityVertexAttributes(gpb);
-	gpb.SetRootSignature(m_utility_root_signature.get());
-	gpb.SetNoCullRasterizationState();
-	gpb.SetNoDepthTestState();
-	gpb.SetNoBlendingState();
-	gpb.SetRenderTarget(0, DXGI_FORMAT_R8G8B8A8_UNORM);
-	gpb.SetVertexShader(m_convert_vs.get());
-
-	return true;
+	return m_utility[slot].get();
 }
 
 /* Whatever the runtime has queued since last time. The text is the
@@ -2358,7 +2356,6 @@ void GSDevice12::DrainDebugMessages()
 void GSDevice12::DestroyResources()
 {
 	StopTFXWarm();
-	m_convert_vs.reset();
 
 	for (auto& it : m_tfx_pipelines)
 		DeferObjectDestruction(it.second.get());
@@ -2366,14 +2363,8 @@ void GSDevice12::DestroyResources()
 	m_last_tfx_pipeline = nullptr;
 	m_tfx_pixel_shaders.clear();
 	m_tfx_vertex_shaders.clear();
-	m_interlace = {};
-	m_merge = {};
-	m_color_copy = {};
 	m_present = {};
-	m_convert = {};
-	m_hdr_setup_pipelines = {};
-	m_hdr_finish_pipelines = {};
-	m_date_image_setup_pipelines = {};
+	m_utility = {};
 
 	m_linear_sampler_cpu.Clear();
 	m_point_sampler_cpu.Clear();
@@ -2690,27 +2681,36 @@ const ID3D12PipelineState* GSDevice12::GetTFXPipeline(const PipelineSelector& p)
  * changes; the record size is checked as well. */
 static constexpr u32 TFX_LIST_VERSION = (SHADER_CACHE_VERSION << 8) | 1;
 
-void GSDevice12::StartTFXWarm()
+bool GSDevice12::StartTFXWarm()
 {
 	const std::string path(m_shader_cache.GetPipelineListFileName());
+	WarmJob* jobs;
+	size_t   i, n;
 
 	gs_warm_list_free(&m_tfx_list);
 	m_tfx_list_loaded = 0;
-	if (path.empty())
-		return;
-	if (!gs_warm_list_load(&m_tfx_list, path.c_str(), TFX_LIST_VERSION))
-	{
-		if (path_is_valid(path.c_str()))
-			log_cb(RETRO_LOG_WARN, "GS: ignoring the pipeline list '%s' (another version, or damaged)\n", path.c_str());
-		return;
-	}
+	if (!path.empty() && !gs_warm_list_load(&m_tfx_list, path.c_str(), TFX_LIST_VERSION)
+			&& path_is_valid(path.c_str()))
+		log_cb(RETRO_LOG_WARN, "GS: ignoring the pipeline list '%s' (another version, or damaged)\n", path.c_str());
 	m_tfx_list_loaded = m_tfx_list.count;
 
+	n = UTIL_COUNT + m_tfx_list.count;
+	if (!(jobs = (WarmJob*)calloc(n, sizeof(WarmJob))))
+		return false;
+	for (i = 0; i < UTIL_COUNT; i++)
+		jobs[i].utility = (u32)i;
+	for (i = 0; i < m_tfx_list.count; i++)
+	{
+		memcpy((void*)&jobs[UTIL_COUNT + i].p, m_tfx_list.recs + i * m_tfx_list.rec_size, sizeof(PipelineSelector));
+		jobs[UTIL_COUNT + i].utility = UTIL_COUNT;
+	}
+
 	m_shader_cache.OpenSnapshot(&m_tfx_warm_cache);
-	m_tfx_warm = gs_warm_start(m_tfx_list.recs, m_tfx_list.rec_size, m_tfx_list.count,
-		sizeof(TFXWarmResult), BuildWarmedTFXPipeline, this);
+	m_tfx_warm = gs_warm_start(jobs, sizeof(WarmJob), n, sizeof(TFXWarmResult), BuildWarmedTFXPipeline, this);
+	free(jobs);
 	if (!m_tfx_warm)
 		D3D12ShaderCache::CloseSnapshot(&m_tfx_warm_cache);
+	return m_tfx_warm != nullptr;
 }
 
 /* Takes what the warm-up thread finished into the map; a pipeline the
@@ -2724,6 +2724,18 @@ bool GSDevice12::CollectWarmedTFXPipelines(const PipelineSelector* want, TFXPipe
 
 	while (gs_warm_take(m_tfx_warm, &r))
 	{
+		if (r.utility < UTIL_COUNT)
+		{
+			/* a utility pipeline first used before the thread built it
+			 * keeps the one built then */
+			if (!m_utility[r.utility])
+				*m_utility[r.utility].put() = r.pso;
+			else
+				r.pso->Release();
+			r.pso = nullptr;
+			KeepTFXWarmBlobs(r);
+			continue;
+		}
 		std::pair<TFXPipelineMap::iterator, bool> ins(
 			m_tfx_pipelines.emplace(r.p, ComPtr<ID3D12PipelineState>()));
 		if (ins.second)
@@ -2821,61 +2833,38 @@ void GSDevice12::StopTFXWarm()
 /* The warm-up thread: one listed pipeline, its shaders from the cache as
  * it stood at the start or compiled, its pipeline from the driver's
  * cached blob when that still holds, else built whole. */
-int GSDevice12::BuildWarmedTFXPipeline(void* ud, const void* job, void* result)
+/* The warm-up thread: a shader from the cache as it stood when the thread
+ * started, else compiled - and then handed back in @built, for the cache. */
+GSDevice12::ComPtr<ID3DBlob> GSDevice12::WarmShader(GSDevice12* self, D3D12ShaderCache::EntryType type,
+	const char* source, ShaderMacro& sm, const char* entry, D3D12ShaderCache::CacheIndexKey* key, ID3DBlob** built)
 {
-	GSDevice12* self           = static_cast<GSDevice12*>(ud);
-	const PipelineSelector* p  = static_cast<const PipelineSelector*>(job);
-	TFXWarmResult* r           = static_cast<TFXWarmResult*>(result);
-	const D3D_FEATURE_LEVEL fl = self->m_shader_cache.GetFeatureLevel();
-	const bool debug           = self->m_shader_cache.IsDebug();
-	const std::string_view source(tfx_fx_shader_raw);
-	GSHWDrawConfig::BlendState pbs;
-	GSHWDrawConfig::PSSelector pps;
-	D3D12::GraphicsPipelineBuilder gpb;
-	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc;
-	ComPtr<ID3DBlob> vs, ps, cached;
+	const size_t len = strlen(source);
+	ComPtr<ID3DBlob> blob;
+
+	*key = D3D12ShaderCache::GetShaderCacheKey(type, source, len, sm.GetPtr(), entry);
+	if ((blob = D3D12ShaderCache::ReadSnapshot(&self->m_tfx_warm_cache, *key)))
+		return blob;
+	blob = D3D::CompileShader(type == D3D12ShaderCache::EntryType::VertexShader ? D3D::ShaderType::Vertex : D3D::ShaderType::Pixel,
+		self->m_shader_cache.GetFeatureLevel(), self->m_shader_cache.IsDebug(),
+		std::string_view(source, len), sm.GetPtr(), entry);
+	if (blob)
+	{
+		*built = blob.get();
+		(*built)->AddRef();
+	}
+	return blob;
+}
+
+/* The warm-up thread: a pipeline from the driver's cached blob when that
+ * still holds, else built whole - and its blob handed back in @built. */
+GSDevice12::ComPtr<ID3D12PipelineState> GSDevice12::WarmPipeline(GSDevice12* self,
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc, D3D12ShaderCache::CacheIndexKey* key, ID3DBlob** built)
+{
+	ComPtr<ID3DBlob> cached;
 	ComPtr<ID3D12PipelineState> pso;
 
-	memset((void*)r, 0, sizeof(*r));
-	memcpy((void*)&r->p, (const void*)p, sizeof(*p));
-	/* (a selector no draw could make: the tables it indexes end there) */
-	if (p->topology > 2 || p->bs.op > 2)
-		return 0;
-	pps = TFXEffectivePS(*p, &pbs);
-
-	{
-		ShaderMacro sm(fl);
-		const char* entry = TFXVertexShaderMacros(sm, p->vs);
-		r->vs_key = D3D12ShaderCache::GetShaderCacheKey(D3D12ShaderCache::EntryType::VertexShader,
-			source.data(), source.size(), sm.GetPtr(), entry);
-		vs = D3D12ShaderCache::ReadSnapshot(&self->m_tfx_warm_cache, r->vs_key);
-		if (!vs)
-		{
-			if (!(vs = D3D::CompileShader(D3D::ShaderType::Vertex, fl, debug, source, sm.GetPtr(), entry)))
-				return 0;
-			r->vs_blob = vs.get();
-			r->vs_blob->AddRef();
-		}
-	}
-	{
-		ShaderMacro sm(fl);
-		TFXPixelShaderMacros(sm, pps);
-		r->ps_key = D3D12ShaderCache::GetShaderCacheKey(D3D12ShaderCache::EntryType::PixelShader,
-			source.data(), source.size(), sm.GetPtr(), "ps_main");
-		ps = D3D12ShaderCache::ReadSnapshot(&self->m_tfx_warm_cache, r->ps_key);
-		if (!ps)
-		{
-			if (!(ps = D3D::CompileShader(D3D::ShaderType::Pixel, fl, debug, source, sm.GetPtr(), "ps_main")))
-				goto fail;
-			r->ps_blob = ps.get();
-			r->ps_blob->AddRef();
-		}
-	}
-
-	self->FillTFXPipeline(gpb, *p, vs.get(), ps.get());
-	desc       = gpb.GetDesc();
-	r->pso_key = D3D12ShaderCache::GetPipelineCacheKey(desc);
-	if ((cached = D3D12ShaderCache::ReadSnapshot(&self->m_tfx_warm_cache, r->pso_key)))
+	*key = D3D12ShaderCache::GetPipelineCacheKey(desc);
+	if ((cached = D3D12ShaderCache::ReadSnapshot(&self->m_tfx_warm_cache, *key)))
 	{
 		desc.CachedPSO.pCachedBlob           = cached->GetBufferPointer();
 		desc.CachedPSO.CachedBlobSizeInBytes = cached->GetBufferSize();
@@ -2888,19 +2877,97 @@ int GSDevice12::BuildWarmedTFXPipeline(void* ud, const void* job, void* result)
 	{
 		ComPtr<ID3DBlob> blob;
 		if (FAILED(self->m_device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(pso.put()))))
-			goto fail;
+			return {};
 		if (SUCCEEDED(pso->GetCachedBlob(blob.put())))
-			r->pso_blob = blob.detach();
+			*built = blob.detach();
 	}
+	return pso;
+}
+
+int GSDevice12::BuildWarmedUtilityPipeline(GSDevice12* self, u32 slot, TFXWarmResult* r)
+{
+	char entry_buf[32];
+	const char* source;
+	const char* entry = UtilityPixelShader(slot, &source, entry_buf, sizeof(entry_buf));
+	ShaderMacro sm(self->m_shader_cache.GetFeatureLevel());
+	D3D12::GraphicsPipelineBuilder gpb;
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc;
+	ComPtr<ID3DBlob> vs, ps;
+	ComPtr<ID3D12PipelineState> pso;
+
+	vs = WarmShader(self, D3D12ShaderCache::EntryType::VertexShader, convert_fx_shader_raw, sm, "vs_main", &r->vs_key, &r->vs_blob);
+	ps = WarmShader(self, D3D12ShaderCache::EntryType::PixelShader, source, sm, entry, &r->ps_key, &r->ps_blob);
+	if (vs && ps && UtilityPipelineDesc(gpb, slot, self->m_utility_root_signature.get(), vs.get(), ps.get()))
+	{
+		desc = gpb.GetDesc();
+		pso  = WarmPipeline(self, desc, &r->pso_key, &r->pso_blob);
+	}
+	if (!pso)
+		return 0;
 	r->pso = pso.detach();
 	return 1;
+}
 
-fail:
-	if (r->vs_blob)
-		r->vs_blob->Release();
-	if (r->ps_blob)
-		r->ps_blob->Release();
-	return 0;
+/* The warm-up thread: one job - a utility pipeline, or a listed draw
+ * pipeline with its shaders. */
+int GSDevice12::BuildWarmedTFXPipeline(void* ud, const void* job, void* result)
+{
+	GSDevice12* self           = static_cast<GSDevice12*>(ud);
+	const WarmJob* j           = static_cast<const WarmJob*>(job);
+	const PipelineSelector* p  = &j->p;
+	TFXWarmResult* r           = static_cast<TFXWarmResult*>(result);
+	const D3D_FEATURE_LEVEL fl = self->m_shader_cache.GetFeatureLevel();
+	GSHWDrawConfig::BlendState pbs;
+	GSHWDrawConfig::PSSelector pps;
+	D3D12::GraphicsPipelineBuilder gpb;
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc;
+	ComPtr<ID3DBlob> vs, ps;
+	ComPtr<ID3D12PipelineState> pso;
+	int built = 0;
+
+	memset((void*)r, 0, sizeof(*r));
+	r->utility = j->utility;
+	if (j->utility < UTIL_COUNT)
+		built = BuildWarmedUtilityPipeline(self, j->utility, r);
+	else
+	{
+		memcpy((void*)&r->p, (const void*)p, sizeof(*p));
+		/* (a selector no draw could make: the tables it indexes end there) */
+		if (p->topology > 2 || p->bs.op > 2)
+			return 0;
+		pps = TFXEffectivePS(*p, &pbs);
+		{
+			ShaderMacro sm(fl);
+			const char* entry = TFXVertexShaderMacros(sm, p->vs);
+			vs = WarmShader(self, D3D12ShaderCache::EntryType::VertexShader, tfx_fx_shader_raw, sm, entry, &r->vs_key, &r->vs_blob);
+		}
+		if (vs)
+		{
+			ShaderMacro sm(fl);
+			TFXPixelShaderMacros(sm, pps);
+			ps = WarmShader(self, D3D12ShaderCache::EntryType::PixelShader, tfx_fx_shader_raw, sm, "ps_main", &r->ps_key, &r->ps_blob);
+		}
+		if (vs && ps)
+		{
+			self->FillTFXPipeline(gpb, *p, vs.get(), ps.get());
+			desc = gpb.GetDesc();
+			if ((pso = WarmPipeline(self, desc, &r->pso_key, &r->pso_blob)))
+			{
+				r->pso = pso.detach();
+				built  = 1;
+			}
+		}
+	}
+	if (!built)
+	{
+		if (r->vs_blob)
+			r->vs_blob->Release();
+		if (r->ps_blob)
+			r->ps_blob->Release();
+		if (r->pso_blob)
+			r->pso_blob->Release();
+	}
+	return built;
 }
 
 bool GSDevice12::BindDrawPipeline(const PipelineSelector& p)
@@ -3206,7 +3273,7 @@ void GSDevice12::RenderTextureMipmap(GSTexture12* texture,
 	cmdlist->RSSetScissorRects(1, &scissor);
 
 	SetUtilityRootSignature();
-	SetPipeline(m_convert[static_cast<int>(ShaderConvert::COPY)].get());
+	SetPipeline(UtilityPipeline(UTIL_CONVERT + static_cast<int>(ShaderConvert::COPY)));
 	DrawStretchRect(GSVector4(0.0f, 0.0f, 1.0f, 1.0f),
 		GSVector4(0.0f, 0.0f, static_cast<float>(dst_width), static_cast<float>(dst_height)),
 		GSVector2i(dst_width, dst_height));
@@ -3536,7 +3603,7 @@ void GSDevice12::SetupDATE(GSTexture* rt, GSTexture* ds, SetDATM datm, const GSV
 	OMSetRenderTargets(nullptr, ds, bbox);
 	IASetVertexBuffer(vertices, sizeof(vertices[0]), 4);
 	SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-	SetPipeline(m_convert[SetDATMShader(datm)].get());
+	SetPipeline(UtilityPipeline(UTIL_CONVERT + SetDATMShader(datm)));
 	SetStencilRef(1);
 	BeginRenderPass(D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_NO_ACCESS, D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_NO_ACCESS,
 		D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_PRESERVE, D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE,
@@ -3586,7 +3653,7 @@ GSTexture12* GSDevice12::SetupPrimitiveTrackingDATE(GSHWDrawConfig& config, Pipe
 	};
 	SetUtilityRootSignature();
 	SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-	SetPipeline(m_date_image_setup_pipelines[pipe.ds][static_cast<u8>(config.datm)].get());
+	SetPipeline(UtilityPipeline(UTIL_DATE_SETUP + pipe.ds * 4 + static_cast<u8>(config.datm)));
 	IASetVertexBuffer(vertices, sizeof(vertices[0]), C89_ARRAY_SIZE(vertices));
 	if (ApplyUtilityState())
 		DrawPrimitive();
@@ -3659,7 +3726,7 @@ void GSDevice12::RenderHW(GSHWDrawConfig& config)
 				draw_rt->GetUNormClearColor(), 0.0f, 0);
 
 			const GSVector4 sRect(GSVector4(config.colclip_update_area) / GSVector4(rtsize.x, rtsize.y).xyxy());
-			SetPipeline(m_hdr_finish_pipelines[pipe.ds].get());
+			SetPipeline(UtilityPipeline(UTIL_HDR_FINISH + pipe.ds));
 			SetUtilityTexture(hdr_rt, m_point_sampler_cpu);
 			DrawStretchRect(sRect, GSVector4(config.colclip_update_area), rtsize);
 
@@ -3815,7 +3882,7 @@ void GSDevice12::RenderHW(GSHWDrawConfig& config)
 	if (hdr_rt && (config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertOnly || config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertAndResolve) && config.rt->GetState() == GSTexture::State::Dirty)
 	{
 		SetUtilityTexture(static_cast<GSTexture12*>(config.rt), m_point_sampler_cpu);
-		SetPipeline(m_hdr_setup_pipelines[pipe.ds].get());
+		SetPipeline(UtilityPipeline(UTIL_HDR_SETUP + pipe.ds));
 
 		const GSVector4 drawareaf = GSVector4((config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertOnly) ? GSVector4i::loadh(rtsize) : config.drawarea);
 		const GSVector4 sRect(drawareaf / GSVector4(rtsize.x, rtsize.y).xyxy());
@@ -3889,7 +3956,7 @@ void GSDevice12::RenderHW(GSHWDrawConfig& config)
 				draw_rt->GetUNormClearColor(), 0.0f, 0);
 
 			const GSVector4 sRect(GSVector4(config.colclip_update_area) / GSVector4(rtsize.x, rtsize.y).xyxy());
-			SetPipeline(m_hdr_finish_pipelines[pipe.ds].get());
+			SetPipeline(UtilityPipeline(UTIL_HDR_FINISH + pipe.ds));
 			SetUtilityTexture(hdr_rt, m_point_sampler_cpu);
 			DrawStretchRect(sRect, GSVector4(config.colclip_update_area), rtsize);
 

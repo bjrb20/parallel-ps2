@@ -7,7 +7,8 @@
  * record size, with bytes past its records, or not a list at all is
  * refused, as is a missing one.
  *
- * The thread: every job it builds comes back once, taken while it runs;
+ * The thread: every job it builds comes back once, taken while it runs,
+ * in the order of the jobs (the renderer puts what it needs first first);
  * a job it declines comes back not at all; stopped part way it stops,
  * and what it finished is still there to take; in a build without
  * threads it does not start. C89. */
@@ -221,7 +222,7 @@ static void check_thread(void)
    unsigned char *seen  = (unsigned char*)calloc(JOBS, 1);
    gs_warm_t     *w;
    res_t          r;
-   unsigned       i, got = 0, bad = 0, want = 0;
+   unsigned       i, got = 0, bad = 0, want = 0, last = 0, order_bad = 0;
    unsigned long  idle = 0;
 
    for (i = 0; i < JOBS; i++)
@@ -248,6 +249,9 @@ static void check_thread(void)
          continue;
       }
       idle = 0;
+      if (got && r.v <= last)
+         order_bad++;
+      last = r.v;
       if (r.v >= JOBS || seen[r.v])
          bad++;
       else
@@ -264,6 +268,7 @@ static void check_thread(void)
    gs_warm_stop(w);
    check(!gs_warm_take(w, &r), "nothing more than it built");
    check(!bad && got == want, "every job it built came back once, right");
+   check(!order_bad, "in the order of the jobs");
    gs_warm_free(w);
 
    /* stopped part way: it stops, and what it finished stays */
@@ -290,7 +295,7 @@ static void check_thread(void)
    check(!gs_warm_take(w, &r), "nothing to take without threads");
    gs_warm_stop(w);
    gs_warm_free(w);
-   (void)got; (void)bad; (void)want; (void)seen; (void)idle;
+   (void)got; (void)bad; (void)want; (void)seen; (void)idle; (void)last; (void)order_bad;
 #endif
    check(gs_warm_start(jobs, sizeof(job_t), 0, sizeof(res_t), build, NULL) == NULL, "no jobs, no thread");
    free(jobs);

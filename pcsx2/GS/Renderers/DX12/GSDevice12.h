@@ -187,14 +187,23 @@ private:
 
 	std::unordered_map<u32, D3D12DescriptorHandle> m_samplers;
 
-	std::array<ComPtr<ID3D12PipelineState>, static_cast<int>(ShaderConvert::Count)> m_convert{};
 	std::array<ComPtr<ID3D12PipelineState>, static_cast<int>(PresentShader::Count)> m_present{};
-	std::array<ComPtr<ID3D12PipelineState>, 32> m_color_copy{};
-	std::array<ComPtr<ID3D12PipelineState>, 2> m_merge{};
-	std::array<ComPtr<ID3D12PipelineState>, NUM_INTERLACE_SHADERS> m_interlace{};
-	std::array<ComPtr<ID3D12PipelineState>, 2> m_hdr_setup_pipelines{}; // [depth]
-	std::array<ComPtr<ID3D12PipelineState>, 2> m_hdr_finish_pipelines{}; // [depth]
-	std::array<std::array<ComPtr<ID3D12PipelineState>, 4>, 2> m_date_image_setup_pipelines{}; // [depth][datm]
+
+	/* The utility pipelines, one table: built on the warm-up thread from
+	 * the device's creation on, each taken at its first use, or built
+	 * then when the thread has not got to it. */
+	enum : u32
+	{
+		UTIL_CONVERT    = 0,                                                   // [ShaderConvert]
+		UTIL_COLOR_COPY = UTIL_CONVERT + static_cast<u32>(ShaderConvert::Count), // [write mask | 16 for RTA]
+		UTIL_HDR_SETUP  = UTIL_COLOR_COPY + 32,                                // [depth]
+		UTIL_HDR_FINISH = UTIL_HDR_SETUP + 2,                                  // [depth]
+		UTIL_DATE_SETUP = UTIL_HDR_FINISH + 2,                                 // [depth * 4 + datm]
+		UTIL_INTERLACE  = UTIL_DATE_SETUP + 8,                                 // [shader]
+		UTIL_MERGE      = UTIL_INTERLACE + NUM_INTERLACE_SHADERS,              // [MMOD]
+		UTIL_COUNT      = UTIL_MERGE + 2,
+	};
+	std::array<ComPtr<ID3D12PipelineState>, UTIL_COUNT> m_utility{};
 
 	std::unordered_map<u32, ComPtr<ID3DBlob>> m_tfx_vertex_shaders;
 	std::unordered_map<GSHWDrawConfig::PSSelector, ComPtr<ID3DBlob>, GSHWDrawConfig::PSSelectorHash> m_tfx_pixel_shaders;
@@ -220,6 +229,15 @@ private:
 		ID3DBlob* ps_blob;
 		ID3DBlob* pso_blob;
 		PipelineSelector p;
+		u32 utility;   /* a UTIL_ slot, or UTIL_COUNT: the draw pipeline p */
+		u32 pad;
+	};
+	/* a job of the warm-up thread: the same two */
+	struct WarmJob
+	{
+		PipelineSelector p;
+		u32 utility;
+		u32 pad;
 	};
 	gs_warm_list_t m_tfx_list = {nullptr, sizeof(PipelineSelector), 0, 0};
 	size_t m_tfx_list_loaded = 0;
@@ -234,7 +252,6 @@ private:
 	GSHWDrawConfig::PSConstantBuffer m_ps_cb_cache;
 
 	D3D12ShaderCache m_shader_cache;
-	ComPtr<ID3DBlob> m_convert_vs;
 
 	void LookupNativeFormat(GSTexture::Format format, DXGI_FORMAT* d3d_format, DXGI_FORMAT* srv_format, DXGI_FORMAT* rtv_format, DXGI_FORMAT* dsv_format) const;
 
@@ -255,11 +272,27 @@ private:
 	__noinline TFXPipelineMap::iterator AddMissingTFXPipeline(const PipelineSelector& p);
 	void FillTFXPipeline(D3D12::GraphicsPipelineBuilder& gpb, const PipelineSelector& p,
 		const ID3DBlob* vs, const ID3DBlob* ps) const;
-	void StartTFXWarm();
+	bool StartTFXWarm();
 	void StopTFXWarm();
 	bool CollectWarmedTFXPipelines(const PipelineSelector* want, TFXPipelineMap::iterator* found);
 	void KeepTFXWarmBlobs(const TFXWarmResult& r);
 	static int BuildWarmedTFXPipeline(void* ud, const void* job, void* result);
+	static int BuildWarmedUtilityPipeline(GSDevice12* self, u32 slot, TFXWarmResult* r);
+	static ComPtr<ID3DBlob> WarmShader(GSDevice12* self, D3D12ShaderCache::EntryType type, const char* source,
+		ShaderMacro& sm, const char* entry, D3D12ShaderCache::CacheIndexKey* key, ID3DBlob** built);
+	static ComPtr<ID3D12PipelineState> WarmPipeline(GSDevice12* self, D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc,
+		D3D12ShaderCache::CacheIndexKey* key, ID3DBlob** built);
+
+	__fi ID3D12PipelineState* UtilityPipeline(u32 slot)
+	{
+		ID3D12PipelineState* p = m_utility[slot].get();
+		return likely(p) ? p : MissingUtilityPipeline(slot);
+	}
+	__noinline ID3D12PipelineState* MissingUtilityPipeline(u32 slot);
+	ComPtr<ID3D12PipelineState> CreateUtilityPipeline(u32 slot);
+	static const char* UtilityPixelShader(u32 slot, const char** source, char* entry, size_t entry_size);
+	static bool UtilityPipelineDesc(D3D12::GraphicsPipelineBuilder& gpb, u32 slot, ID3D12RootSignature* rs,
+		const ID3DBlob* vs, const ID3DBlob* ps);
 
 	ComPtr<ID3DBlob> GetUtilityVertexShader(const std::string& source, const char* entry_point);
 	ComPtr<ID3DBlob> GetUtilityPixelShader(const std::string& source, const char* entry_point);
@@ -271,11 +304,6 @@ private:
 	bool CreateBuffers();
 	bool CreateRootSignatures();
 
-	bool CompileConvertPipelines();
-	bool CompilePresentPipelines();
-	bool CompileInterlacePipelines();
-	bool CompileMergePipelines();
-	bool CompilePostProcessingPipelines();
 
 	void DestroyResources();
 	void DrainDebugMessages();
