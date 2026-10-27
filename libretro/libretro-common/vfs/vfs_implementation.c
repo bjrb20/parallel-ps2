@@ -788,7 +788,17 @@ libretro_vfs_implementation_file *retro_vfs_file_open_impl(
       stream->orig_path = strdup(path);
 
 #ifdef VFS_HAVE_FILE_MAPPING
-   if (stream->hints & RETRO_VFS_FILE_ACCESS_HINT_FREQUENT_ACCESS && mode == RETRO_VFS_FILE_ACCESS_READ)
+   /* Only a descriptor can be mapped: plain files, and SAF, which the
+    * descriptor branch opens. cdrom://, smb:// and nfs:// streams are
+    * opened by their own backends in the buffered branch and read
+    * through them, unmapped. */
+   if (     (stream->hints & RETRO_VFS_FILE_ACCESS_HINT_FREQUENT_ACCESS)
+         && mode == RETRO_VFS_FILE_ACCESS_READ
+         && (     stream->scheme == VFS_SCHEME_NONE
+#if defined(ANDROID) && defined(HAVE_SAF)
+               || stream->scheme == VFS_SCHEME_SAF
+#endif
+            ))
       stream->hints |= RFILE_HINT_UNBUFFERED;
    else
 #endif
@@ -872,7 +882,7 @@ libretro_vfs_implementation_file *retro_vfs_file_open_impl(
          case VFS_SCHEME_CDROM:
             retro_vfs_file_open_cdrom(stream, path, mode, hints);
 #if defined(_WIN32) && !defined(_XBOX)
-            if (!stream->fh)
+            if (!stream->fh || stream->fh == INVALID_HANDLE_VALUE)
                goto error;
 #elif defined(__APPLE__)
             if (!stream->iokit_mmc)
@@ -1213,13 +1223,14 @@ error:
 
 int retro_vfs_file_close_impl(libretro_vfs_implementation_file *stream)
 {
+   int result = 0;
    if (!stream)
       return -1;
 
 #ifdef HAVE_CDROM
    if (stream->scheme == VFS_SCHEME_CDROM)
    {
-      retro_vfs_file_close_cdrom(stream);
+      result = retro_vfs_file_close_cdrom(stream);
       goto end;
    }
 #endif
@@ -1242,7 +1253,8 @@ int retro_vfs_file_close_impl(libretro_vfs_implementation_file *stream)
    if ((stream->hints & RFILE_HINT_UNBUFFERED) == 0)
    {
       if (stream->fp)
-         fclose(stream->fp);
+         if (fclose(stream->fp) != 0)
+            result = -1;
    }
    else
    {
@@ -1271,9 +1283,11 @@ int retro_vfs_file_close_impl(libretro_vfs_implementation_file *stream)
    if (stream->fd >= 0)
    {
 #if defined(VITA)
-      sceIoClose((SceUID)stream->fd);
+      if (sceIoClose((SceUID)stream->fd) < 0)
+         result = -1;
 #else
-      close(stream->fd);
+      if (close(stream->fd) != 0)
+         result = -1;
 #endif
    }
 #ifdef HAVE_CDROM
@@ -1300,7 +1314,7 @@ netend:
 
    free(stream);
 
-   return 0;
+   return result;
 }
 
 int retro_vfs_file_error_impl(libretro_vfs_implementation_file *stream)
@@ -1348,14 +1362,10 @@ int64_t retro_vfs_file_size_impl(libretro_vfs_implementation_file *stream)
  * The two control codes are the documented CTL_CODE expansions:
  *   FSCTL_SET_SPARSE    = CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 49, METHOD_BUFFERED, FILE_SPECIAL_ACCESS)
  *   FSCTL_SET_ZERO_DATA = CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 50, METHOD_BUFFERED, FILE_WRITE_DATA)
- * Each is guarded, so a translation unit that has already seen
- * winioctl.h through some other path keeps that header's definitions. */
-#ifndef FSCTL_SET_SPARSE
-#define FSCTL_SET_SPARSE 0x000900c4
-#endif
-#ifndef FSCTL_SET_ZERO_DATA
-#define FSCTL_SET_ZERO_DATA 0x000980c8
-#endif
+ * They carry their own names so a translation unit that also sees
+ * winioctl.h holds one definition of each. */
+#define RA_FSCTL_SET_SPARSE    0x000900c4
+#define RA_FSCTL_SET_ZERO_DATA 0x000980c8
 #ifndef FILE_ZERO_DATA_INFORMATION_DEFINED
 #define FILE_ZERO_DATA_INFORMATION_DEFINED
 typedef struct _RETRO_FILE_ZERO_DATA_INFORMATION
@@ -1567,13 +1577,13 @@ int retro_vfs_file_punch_hole_impl(libretro_vfs_implementation_file *stream,
        * zeroes, which is correct but saves nothing. Marking is idempotent. */
       {
          DWORD tmp = 0;
-         DeviceIoControl(handle, FSCTL_SET_SPARSE, NULL, 0, NULL, 0, &tmp, NULL);
+         DeviceIoControl(handle, RA_FSCTL_SET_SPARSE, NULL, 0, NULL, 0, &tmp, NULL);
       }
 
       zero_info.FileOffset.QuadPart      = offset;
       zero_info.BeyondFinalZero.QuadPart = offset + len;
 
-      if (!DeviceIoControl(handle, FSCTL_SET_ZERO_DATA, &zero_info,
+      if (!DeviceIoControl(handle, RA_FSCTL_SET_ZERO_DATA, &zero_info,
                sizeof(zero_info), NULL, 0, &returned, NULL))
          return -1;
       return 0;
@@ -1642,7 +1652,7 @@ int64_t retro_vfs_file_truncate_impl(libretro_vfs_implementation_file *stream, i
 	   return 0;
    }
 #endif
-#elif !defined(VITA) && !defined(PSP) && !defined(PS2) && !defined(ORBIS) && (!defined(SWITCH) || defined(HAVE_LIBNX))
+#elif !defined(VITA) && !defined(PSP) && !defined(PS2) && !defined(ORBIS)
    if (stream && stream->fp && ftruncate(fileno(stream->fp), (off_t)len) == 0)
    {
       stream->size = len;
@@ -1687,6 +1697,43 @@ int64_t retro_vfs_file_seek_impl(libretro_vfs_implementation_file *stream,
       int64_t offset, int seek_position)
 {
    return retro_vfs_file_seek_internal(stream, offset, seek_position);
+}
+
+int64_t retro_vfs_file_view_impl(libretro_vfs_implementation_file *stream,
+      uint64_t len, const uint8_t **ptr)
+{
+   if (!stream || !ptr || len > (uint64_t)INT64_MAX)
+      return -1;
+
+   if ((stream->hints & RFILE_HINT_UNBUFFERED) == 0)
+   {
+#ifdef HAVE_SMBCLIENT
+      if (stream->scheme == VFS_SCHEME_SMB)
+         return retro_vfs_file_view_smb(stream, len, ptr);
+#endif
+#ifdef HAVE_NFSCLIENT
+      if (stream->scheme == VFS_SCHEME_NFS)
+         return retro_vfs_file_view_nfs(stream, len, ptr);
+#endif
+      return -1;
+   }
+#ifdef VFS_HAVE_FILE_MAPPING
+   if (stream->mapped
+         && (stream->hints & RETRO_VFS_FILE_ACCESS_HINT_FREQUENT_ACCESS))
+   {
+      if (stream->mappos >= stream->mapsize)
+         return stream->mappos == stream->mapsize ? 0 : -1;
+      if (len > stream->mapsize - stream->mappos)
+         len = stream->mapsize - stream->mappos;
+#if defined(_WIN32) && !defined(_XBOX) && !defined(HAVE_MMAP)
+      vfs_win32_readahead(stream, stream->mappos, len);
+#endif
+      *ptr             = &stream->mapped[stream->mappos];
+      stream->mappos  += len;
+      return (int64_t)len;
+   }
+#endif
+   return -1;
 }
 
 int64_t retro_vfs_file_read_impl(libretro_vfs_implementation_file *stream,
@@ -2249,7 +2296,7 @@ int retro_vfs_file_rename_impl(const char *old_path, const char *new_path)
       free(aside);
       return ret;
    }
-#elif defined(_3DS) || defined(PS2) || defined(WIIU) || defined(GEKKO) || defined(__PSL1GHT__) || defined(__PS3__) || (defined(SWITCH) && defined(HAVE_LIBNX))
+#elif defined(_3DS) || defined(PS2) || defined(WIIU) || defined(GEKKO) || defined(__PSL1GHT__) || defined(__PS3__) || defined(SWITCH)
    /* The filesystems here refuse to rename onto an existing entry -
     * FS on 3DS and Switch, FatFs behind bdmfs_fatfs on PS2, libfat
     * on Wii and GameCube, LV2's sys_fs_rename on PS3 - and libnx,

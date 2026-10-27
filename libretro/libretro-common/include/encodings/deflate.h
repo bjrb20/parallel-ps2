@@ -88,6 +88,19 @@ void  rinflate_set_in(void *stream, const uint8_t *in, size_t in_size);
 void  rinflate_set_out(void *stream, uint8_t *out, size_t out_size);
 
 /**
+ * rinflate_extend_out:
+ * @stream       : stream returned by rinflate_new()
+ * @out_size     : the output's new size, from where rinflate_set_out()
+ *                 put its start
+ *
+ * Moves the end of the bound output, keeping what is written and where:
+ * a decode into one buffer runs a part at a time, its matches reaching
+ * back into the buffer itself. A size short of what is written is
+ * ignored.
+ **/
+void  rinflate_extend_out(void *stream, size_t out_size);
+
+/**
  * rinflate_set_dictionary:
  *
  * Primes the 32KB back-reference window with the tail of @dict, so a
@@ -109,6 +122,22 @@ void     rinflate_set_start_bit(void *stream, int bits);
  * number of output bytes produced to *wrote (either may be NULL).  Returns
  * one of the RDEFLATE_PROCESS_* codes. */
 int   rinflate_process(void *stream, size_t *read, size_t *wrote);
+
+/**
+ * rinflate64_decode:
+ * @dst        : where the stream decodes to, @dst_len octets of room
+ * @src        : a raw Deflate64 stream (no header), @src_len octets
+ * @wrote      : receives the octets decoded (may be NULL)
+ *
+ * Deflate64 - RFC 1951 with a 64 KiB window, a 16-bit length extension
+ * and distance codes 30 and 31 - decoded whole, in one call, into a
+ * buffer that holds all of it, as zip (method 9) and 7z store it.
+ *
+ * Returns: RDEFLATE_PROCESS_END, or RDEFLATE_PROCESS_ERROR for a stream
+ * that is malformed, ends early or decodes to more than @dst_len.
+ **/
+int   rinflate64_decode(uint8_t *dst, size_t dst_len,
+      const uint8_t *src, size_t src_len, size_t *wrote);
 
 /* -------- compression (deflate) -------- */
 
