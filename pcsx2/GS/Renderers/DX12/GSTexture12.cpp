@@ -349,7 +349,7 @@ ID3D12GraphicsCommandList* GSTexture12::GetCommandBufferForUpdate()
 	return dev->GetInitCommandList();
 }
 
-ID3D12Resource* GSTexture12::AllocateUploadStagingBuffer(const void* data, u32 pitch, u32 upload_pitch, u32 height) const
+ID3D12Resource* GSTexture12::AllocateUploadStagingBuffer(const void* data, u32 pitch, u32 upload_pitch, u32 row_bytes, u32 height) const
 {
 	GSDevice12* const dev = GSDevice12::GetInstance();
 	const u32 buffer_size = CalcUploadSize(height, upload_pitch);
@@ -375,7 +375,7 @@ ID3D12Resource* GSTexture12::AllocateUploadStagingBuffer(const void* data, u32 p
 		return nullptr;
 	}
 
-	CopyTextureDataForUpload(map_ptr, data, pitch, upload_pitch, height);
+	CopyTextureDataForUpload(map_ptr, data, pitch, upload_pitch, row_bytes, height);
 
 	const D3D12_RANGE write_range = {0, buffer_size};
 	resource->Unmap(0, &write_range);
@@ -386,11 +386,11 @@ ID3D12Resource* GSTexture12::AllocateUploadStagingBuffer(const void* data, u32 p
 	return resource.get();
 }
 
-void GSTexture12::CopyTextureDataForUpload(void* dst, const void* src, u32 pitch, u32 upload_pitch, u32 height) const
+void GSTexture12::CopyTextureDataForUpload(void* dst, const void* src, u32 pitch, u32 upload_pitch, u32 row_bytes, u32 height) const
 {
 	const u32 block_size = GetCompressedBlockSize();
 	const u32 count = (height + (block_size - 1)) / block_size;
-	GSStrideMemCpy(dst, upload_pitch, src, pitch, pcsx2_min_i(upload_pitch, pitch), count);
+	GSStrideMemCpy(dst, upload_pitch, src, pitch, row_bytes, count);
 }
 
 bool GSTexture12::Update(const GSVector4i& r, const void* data, int pitch, int layer)
@@ -404,7 +404,12 @@ bool GSTexture12::Update(const GSVector4i& r, const void* data, int pitch, int l
 	const u32 block_size    = GetCompressedBlockSize();
 	const u32 width         = pcsx2_align_up_pow2_u32(r.width(), block_size);
 	const u32 height        = pcsx2_align_up_pow2_u32(r.height(), block_size);
-	const u32 upload_pitch  = pcsx2_align_up_pow2_u32(pitch, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+	/* Only the rect's texels reach the texture: a caller whose rows are
+	 * wider than the rect (a region of a larger decode) does not get its
+	 * whole pitch staged. */
+	const u32 rect_bytes    = CalcUploadPitch(width);
+	const u32 row_bytes     = ((u32)pitch < rect_bytes) ? (u32)pitch : rect_bytes;
+	const u32 upload_pitch  = pcsx2_align_up_pow2_u32(row_bytes, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
 	const u32 required_size = CalcUploadSize(r.height(), upload_pitch);
 
 	D3D12_TEXTURE_COPY_LOCATION srcloc;
@@ -419,7 +424,7 @@ bool GSTexture12::Update(const GSVector4i& r, const void* data, int pitch, int l
 	// Otherwise allocation will either fail, or require lots of cmdbuffer submissions.
 	if (required_size > (dev->GetTextureStreamBuffer().GetSize() / 2))
 	{
-		srcloc.pResource = AllocateUploadStagingBuffer(data, pitch, upload_pitch, height);
+		srcloc.pResource = AllocateUploadStagingBuffer(data, pitch, upload_pitch, row_bytes, height);
 		if (!srcloc.pResource)
 			return false;
 
@@ -440,7 +445,7 @@ bool GSTexture12::Update(const GSVector4i& r, const void* data, int pitch, int l
 
 		srcloc.pResource = sbuffer.GetBuffer();
 		srcloc.PlacedFootprint.Offset = sbuffer.GetCurrentOffset();
-		CopyTextureDataForUpload(sbuffer.GetCurrentHostPointer(), data, pitch, upload_pitch, height);
+		CopyTextureDataForUpload(sbuffer.GetCurrentHostPointer(), data, pitch, upload_pitch, row_bytes, height);
 		sbuffer.CommitMemory(required_size);
 	}
 

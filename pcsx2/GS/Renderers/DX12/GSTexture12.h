@@ -93,8 +93,8 @@ private:
 		WriteDescriptorType write_type, D3D12DescriptorHandle* uav);
 
 	ID3D12GraphicsCommandList* GetCommandBufferForUpdate();
-	ID3D12Resource* AllocateUploadStagingBuffer(const void* data, u32 pitch, u32 upload_pitch, u32 height) const;
-	void CopyTextureDataForUpload(void* dst, const void* src, u32 pitch, u32 upload_pitch, u32 height) const;
+	ID3D12Resource* AllocateUploadStagingBuffer(const void* data, u32 pitch, u32 upload_pitch, u32 row_bytes, u32 height) const;
+	void CopyTextureDataForUpload(void* dst, const void* src, u32 pitch, u32 upload_pitch, u32 row_bytes, u32 height) const;
 
 	wil::com_ptr_nothrow<ID3D12Resource> m_resource;
 	gs_d3d12_alloc_t m_alloc = {};
