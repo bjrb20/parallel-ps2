@@ -171,6 +171,9 @@ private:
 	ComPtr<IDXGIFactory5> m_dxgi_factory;
 
 	bool m_device_lost = false;
+	bool m_utility_failed = false;
+	/* a utility pipeline failed at first use: the next device builds them at its creation */
+	static bool s_utility_build_failed;
 
 	ComPtr<ID3D12RootSignature> m_tfx_root_signature;
 	ComPtr<ID3D12RootSignature> m_utility_root_signature;

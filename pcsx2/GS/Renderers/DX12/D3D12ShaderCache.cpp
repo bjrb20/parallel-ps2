@@ -685,9 +685,11 @@ bool D3D12ShaderCache::OpenSnapshot(Snapshot* snap) const
 {
 	size_t i;
 
+	/* False only when the cache has entries the snapshot cannot carry;
+	 * no cache is an empty snapshot, and the worker compiles. */
 	memset(snap, 0, sizeof(*snap));
 	if (GSConfig.DisableShaderCache || !m_shader_blob_file)
-		return false;
+		return true;
 
 	if (!m_shader_index.empty() &&
 		(snap->shaders = (SnapshotEntry*)malloc(m_shader_index.size() * sizeof(SnapshotEntry))))
@@ -705,7 +707,11 @@ bool D3D12ShaderCache::OpenSnapshot(Snapshot* snap) const
 		snap->shader_blob_file = filestream_open(
 			(GetCacheBaseFileName("shaders", m_feature_level, m_debug) + ".bin").c_str(),
 			RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+		if (!snap->shader_blob_file)
+			return false;
 	}
+	else if (!m_shader_index.empty())
+		return false;
 	if (!m_pipeline_index.empty() &&
 		(snap->pipelines = (SnapshotEntry*)malloc(m_pipeline_index.size() * sizeof(SnapshotEntry))))
 	{
@@ -722,7 +728,11 @@ bool D3D12ShaderCache::OpenSnapshot(Snapshot* snap) const
 		snap->pipeline_blob_file = filestream_open(
 			(GetCacheBaseFileName("pipelines", m_feature_level, m_debug) + ".bin").c_str(),
 			RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+		if (!snap->pipeline_blob_file)
+			return false;
 	}
+	else if (!m_pipeline_index.empty())
+		return false;
 	return true;
 }
 

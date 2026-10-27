@@ -127,8 +127,10 @@ class D3D12ShaderCache
 			RFILE* pipeline_blob_file;
 		};
 
-		/* The drawing thread, with the cache open. False when the cache is
-		 * off; the snapshot is then empty and reads find nothing. */
+		/* The drawing thread, with the cache open. With the cache off the
+		 * snapshot is empty and reads find nothing; false when the cache
+		 * has entries it could not take (no memory, a file that will not
+		 * open). */
 		bool OpenSnapshot(Snapshot* snap) const;
 		/* The warm-up thread: the blob for @key, or null. */
 		static ComPtr<ID3DBlob> ReadSnapshot(Snapshot* snap, const CacheIndexKey& key);

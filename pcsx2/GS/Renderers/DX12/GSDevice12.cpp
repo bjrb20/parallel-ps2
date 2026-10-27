@@ -992,13 +992,15 @@ bool GSDevice12::Create()
 	}
 
 	/* The utility pipelines, then the listed draw pipelines, from here on
-	 * a thread of their own; without one, the utility pipelines here. */
+	 * a thread of their own; without one, or after one of them could not
+	 * be built on the last device, the utility pipelines here, so a
+	 * device that cannot have them is not made. */
 	const bool warming = StartTFXWarm();
 
 	if (!CreateBuffers())
 		return false;
 
-	if (!warming)
+	if (!warming || s_utility_build_failed)
 	{
 		for (u32 slot = 0; slot < UTIL_COUNT; slot++)
 		{
@@ -1008,6 +1010,7 @@ bool GSDevice12::Create()
 				return false;
 			}
 		}
+		s_utility_build_failed = false;
 	}
 
 	InitializeState();
@@ -2303,8 +2306,10 @@ GSDevice12::ComPtr<ID3D12PipelineState> GSDevice12::CreateUtilityPipeline(u32 sl
 }
 
 /* A utility pipeline at its first use: the warm-up thread's, else built
- * here. One that cannot be built at all leaves the device lost, as one
- * that failed at the device's creation left it unmade. */
+ * here once, as device creation built it. One that cannot be built
+ * leaves the device lost, and the next device builds them all at its
+ * creation, failing it as before; the draws asking meanwhile are
+ * dropped (ApplyUtilityState). */
 ID3D12PipelineState* GSDevice12::MissingUtilityPipeline(u32 slot)
 {
 	if (m_tfx_warm)
@@ -2313,11 +2318,15 @@ ID3D12PipelineState* GSDevice12::MissingUtilityPipeline(u32 slot)
 		if (m_utility[slot])
 			return m_utility[slot].get();
 	}
+	if (m_utility_failed)
+		return nullptr;
 	m_utility[slot] = CreateUtilityPipeline(slot);
 	if (!m_utility[slot])
 	{
 		log_cb(RETRO_LOG_ERROR, "GS: utility pipeline %u failed to build\n", slot);
-		m_device_lost = true;
+		m_utility_failed       = true;
+		s_utility_build_failed = true;
+		m_device_lost          = true;
 	}
 	return m_utility[slot].get();
 }
@@ -2365,6 +2374,7 @@ void GSDevice12::DestroyResources()
 	m_tfx_vertex_shaders.clear();
 	m_present = {};
 	m_utility = {};
+	m_utility_failed = false;
 
 	m_linear_sampler_cpu.Clear();
 	m_point_sampler_cpu.Clear();
@@ -2681,6 +2691,8 @@ const ID3D12PipelineState* GSDevice12::GetTFXPipeline(const PipelineSelector& p)
  * changes; the record size is checked as well. */
 static constexpr u32 TFX_LIST_VERSION = (SHADER_CACHE_VERSION << 8) | 1;
 
+bool GSDevice12::s_utility_build_failed = false;
+
 bool GSDevice12::StartTFXWarm()
 {
 	const std::string path(m_shader_cache.GetPipelineListFileName());
@@ -2705,8 +2717,10 @@ bool GSDevice12::StartTFXWarm()
 		jobs[UTIL_COUNT + i].utility = UTIL_COUNT;
 	}
 
-	m_shader_cache.OpenSnapshot(&m_tfx_warm_cache);
-	m_tfx_warm = gs_warm_start(jobs, sizeof(WarmJob), n, sizeof(TFXWarmResult), BuildWarmedTFXPipeline, this);
+	if (m_shader_cache.OpenSnapshot(&m_tfx_warm_cache))
+		m_tfx_warm = gs_warm_start(jobs, sizeof(WarmJob), n, sizeof(TFXWarmResult), BuildWarmedTFXPipeline, this);
+	else
+		log_cb(RETRO_LOG_WARN, "GS: the shader cache could not be opened for the warm-up thread\n");
 	free(jobs);
 	if (!m_tfx_warm)
 		D3D12ShaderCache::CloseSnapshot(&m_tfx_warm_cache);
@@ -3549,6 +3563,9 @@ bool GSDevice12::ApplyTFXState(bool already_execed)
 
 bool GSDevice12::ApplyUtilityState(bool already_execed)
 {
+	/* (a utility pipeline that could not be built: no draw) */
+	if (unlikely(!m_current_pipeline))
+		return false;
 	if (m_current_root_signature == RootSignature::Utility && m_dirty_flags == 0)
 		return true;
 
