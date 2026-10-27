@@ -5,6 +5,8 @@
  *   - a .bin image converted to raw is its pages, each followed by the
  *     ECC of its quarters and four zero bytes, and converted back is the
  *     image it was; a trailing part page is dropped;
+ *   - a conversion that fails leaves an existing output as it was, and
+ *     no temporary beside it;
  *   - a conversion that cannot open its output fails, and leaves no file
  *     open: run often enough to use up every handle the process has, and
  *     a conversion after it still works.
@@ -105,7 +107,7 @@ static unsigned char *get_file(const char *path, long *size)
 
 int main(int argc, char **argv)
 {
-	static char bin[1024], raw[1024], back[1024], nowhere[1024];
+	static char bin[1024], raw[1024], back[1024], nowhere[1024], tmp[1100];
 	const long bin_size = PAGES * MEMCARD_PAGE_DATA + 100;
 	unsigned char *image, *got;
 	unsigned char block[128];
@@ -121,6 +123,7 @@ int main(int argc, char **argv)
 	sprintf(raw, "%s/ecc_card.binx", argv[1]);
 	sprintf(back, "%s/ecc_card_back.bin", argv[1]);
 	sprintf(nowhere, "%s/no_such_dir/ecc_card.binx", argv[1]);
+	sprintf(tmp, "%s.tmp", back);
 
 	/* The ECC against its definition. */
 	for (i = 0; i < 4096; i++)
@@ -168,6 +171,22 @@ int main(int argc, char **argv)
 	check(got && size == PAGES * MEMCARD_PAGE_DATA
 			&& !memcmp(got, image, PAGES * MEMCARD_PAGE_DATA),
 			"converting back does not give the image");
+	free(got);
+	got = get_file(tmp, &size);
+	check(!got, "a conversion leaves its temporary behind");
+	free(got);
+
+	/* A conversion that fails partway: the scratch directory is the input,
+	 * which opens where the C runtime allows it and cannot be read. The
+	 * output written above must come through untouched. */
+	check(!memcard_raw_to_noecc(argv[1], back), "converting from a directory succeeds");
+	got = get_file(back, &size);
+	check(got && size == PAGES * MEMCARD_PAGE_DATA
+			&& !memcmp(got, image, PAGES * MEMCARD_PAGE_DATA),
+			"a failed conversion changed the existing output");
+	free(got);
+	got = get_file(tmp, &size);
+	check(!got, "a failed conversion leaves its temporary behind");
 	free(got);
 
 	/* An output that cannot be opened: fails, and keeps no handle. */

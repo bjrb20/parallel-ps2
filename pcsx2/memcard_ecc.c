@@ -3,6 +3,7 @@
  * https://sourceforge.net/p/mymc-opl/code/ci/master/tree/ps2mc_ecc.py */
 #include <string.h>
 
+#include <retro_miscellaneous.h>
 #include <streams/file_stream.h>
 
 #include "memcard_ecc.h"
@@ -66,7 +67,8 @@ uint32_t memcard_ecc(const uint8_t *buf)
 	     | ((line_parity_1 & 0xFF) << 16);
 }
 
-/* Opens both files; on failure neither is left open. */
+/* Opens the input, and the output's temporary (filestream_open_atomic);
+ * on failure neither is left open. */
 static int open_pair(const char *file_in, const char *file_out,
 		RFILE **fin, RFILE **fout)
 {
@@ -74,8 +76,7 @@ static int open_pair(const char *file_in, const char *file_out,
 			RETRO_VFS_FILE_ACCESS_HINT_NONE);
 	if (!*fin)
 		return 0;
-	*fout = filestream_open(file_out, RETRO_VFS_FILE_ACCESS_WRITE,
-			RETRO_VFS_FILE_ACCESS_HINT_NONE);
+	*fout = filestream_open_atomic(file_out);
 	if (!*fout)
 	{
 		filestream_close(*fin);
@@ -84,15 +85,22 @@ static int open_pair(const char *file_in, const char *file_out,
 	return 1;
 }
 
-/* Closes both; the output is flushed first. ok is what the copy came to. */
-static int close_pair(RFILE *fin, RFILE *fout, int ok)
+/* Closes both, and puts the output in place of file_out only when ok,
+ * what the copy came to, and the close both say it is whole. */
+static int close_pair(RFILE *fin, RFILE *fout, const char *file_out, int ok)
 {
+	int r;
 	filestream_close(fin);
-	if (ok && filestream_flush(fout) != 0)
-		ok = 0;
-	if (filestream_close(fout) != 0)
-		ok = 0;
-	return ok;
+	r = filestream_commit_atomic(fout, file_out, ok != 0);
+	/* Whole but not renamed into place: file_out keeps its old contents,
+	 * and the temporary goes. */
+	if (r == 1)
+	{
+		char tmp[PATH_MAX_LENGTH];
+		if (filestream_atomic_temp_name(tmp, sizeof(tmp), file_out))
+			filestream_delete(tmp);
+	}
+	return r == 0;
 }
 
 int memcard_noecc_to_raw(const char *file_in, const char *file_out)
@@ -125,7 +133,7 @@ int memcard_noecc_to_raw(const char *file_in, const char *file_out)
 		if (filestream_write(fout, page, MEMCARD_PAGE_RAW) != MEMCARD_PAGE_RAW)
 			ok = 0;
 	}
-	return close_pair(fin, fout, ok);
+	return close_pair(fin, fout, file_out, ok);
 }
 
 int memcard_raw_to_noecc(const char *file_in, const char *file_out)
@@ -144,5 +152,5 @@ int memcard_raw_to_noecc(const char *file_in, const char *file_out)
 		 || filestream_write(fout, page, MEMCARD_PAGE_DATA) != MEMCARD_PAGE_DATA)
 			ok = 0;
 	}
-	return close_pair(fin, fout, ok);
+	return close_pair(fin, fout, file_out, ok);
 }

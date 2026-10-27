@@ -23,7 +23,8 @@ uint32_t memcard_ecc(const uint8_t *buf);
 
 /* Writes file_out as the raw image of the .bin image file_in, whole pages
  * only. Returns 1 on success, 0 on failure; both files are closed either
- * way, and file_out may be left partly written. */
+ * way. file_out is replaced whole (filestream_open_atomic), so on failure
+ * it is left as it was. */
 int memcard_noecc_to_raw(const char *file_in, const char *file_out);
 
 /* Writes file_out as the .bin image of the raw image file_in, whole pages

@@ -312,17 +312,32 @@ bool FileMemoryCard::Create(const char* mcdFile, uint sizeInMB)
 	u8* buf = (u8*)malloc(MC2_ERASE_SIZE);
 	if (!buf)
 		return false;
-	RFILE *fp = filestream_open(mcdFile, RETRO_VFS_FILE_ACCESS_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+	/* Written beside mcdFile and renamed into place whole, so a full disk
+	 * cannot leave a short card that later opens as a smaller one. */
+	RFILE *fp = filestream_open_atomic(mcdFile);
 	bool ok = fp != nullptr;
 
 	memset(buf, 0xff, MC2_ERASE_SIZE);
 
 	for (uint i = 0; ok && i < (MC2_MBSIZE * sizeInMB) / MC2_ERASE_SIZE; i++)
 		ok = filestream_write(fp, buf, MC2_ERASE_SIZE) == (int64_t)(MC2_ERASE_SIZE);
-	if (fp)
-		filestream_close(fp);
 	free(buf);
-	return ok;
+	if (!fp)
+		return false;
+	switch (filestream_commit_atomic(fp, mcdFile, ok))
+	{
+		case 0:
+			return true;
+		case 1:
+		{
+			char tmp[PCSX2_PATH_MAX];
+			if (filestream_atomic_temp_name(tmp, sizeof(tmp), mcdFile))
+				filestream_delete(tmp);
+			return false;
+		}
+		default:
+			return false;
+	}
 }
 
 s32 FileMemoryCard::IsPresent(uint slot)
