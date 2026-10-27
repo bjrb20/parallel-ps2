@@ -270,7 +270,7 @@ GSRendererPGS::~GSRendererPGS()
  * ------------------------------------------------------------------------ */
 
 #define PGS_LIST_MAGIC   0x4c534750u /* "PGSL" */
-#define PGS_LIST_VERSION 2u
+#define PGS_LIST_VERSION 3u
 #define PGS_LIST_HEADER  28u
 #define PGS_LIST_MAX     (2u * Vulkan::Device::COMPUTE_PIPELINE_RECORDS)
 #define PGS_LIST_MAX_GFX (2u * Vulkan::Device::GRAPHICS_PIPELINE_RECORDS)

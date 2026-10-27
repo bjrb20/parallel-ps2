@@ -136,6 +136,8 @@ static PFN_vkCreateComputePipelines  vn_real_ccp;
 static PFN_vkCreateGraphicsPipelines vn_real_cgp;
 static long vn_pipes_frame, vn_pipes_compile;
 static long vn_gfx_frame, vn_gfx_compile;
+static PFN_vkCmdSetBlendConstants vn_real_sbc;
+static long vn_blend_sets;
 
 static void vn_count_pipes(uint32_t n, int graphics)
 {
@@ -183,8 +185,19 @@ static VKAPI_ATTR VkResult VKAPI_CALL vn_cgp(VkDevice d, VkPipelineCache c, uint
 	return vn_real_cgp(d, c, n, ci, a, out);
 }
 
+static VKAPI_ATTR void VKAPI_CALL vn_sbc(VkCommandBuffer cb, const float c[4])
+{
+	__sync_fetch_and_add(&vn_blend_sets, 1L);
+	vn_real_sbc(cb, c);
+}
+
 static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vn_count_gdpa(VkDevice d, const char* name)
 {
+	if (!strcmp(name, "vkCmdSetBlendConstants"))
+	{
+		vn_real_sbc = (PFN_vkCmdSetBlendConstants)vn_real_gdpa(d, name);
+		return vn_real_sbc ? (PFN_vkVoidFunction)vn_sbc : NULL;
+	}
 	if (!strcmp(name, "vkGetDeviceProcAddr"))
 		return (PFN_vkVoidFunction)vn_count_gdpa;
 	if (!strcmp(name, "vkCreateComputePipelines"))
@@ -211,6 +224,11 @@ static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vn_count_gipa(VkInstance inst, c
 	{
 		vn_real_ccp = (PFN_vkCreateComputePipelines)gipa(inst, name);
 		return vn_real_ccp ? (PFN_vkVoidFunction)vn_ccp : NULL;
+	}
+	if (inst && !strcmp(name, "vkCmdSetBlendConstants"))
+	{
+		vn_real_sbc = (PFN_vkCmdSetBlendConstants)gipa(inst, name);
+		return vn_real_sbc ? (PFN_vkVoidFunction)vn_sbc : NULL;
 	}
 	if (inst && !strcmp(name, "vkCreateGraphicsPipelines"))
 	{
@@ -977,6 +995,8 @@ int main(int argc, char** argv)
 		if (getenv("VN_COUNT_PIPELINES"))
 			printf("  graphics pipelines: %ld built on the frame's threads, %ld on compile threads\n",
 				vn_pipes_read(&vn_gfx_frame), vn_pipes_read(&vn_gfx_compile));
+		if (getenv("VN_COUNT_PIPELINES"))
+			printf("  blend constants set %ld times in %d frames\n", vn_pipes_read(&vn_blend_sets), frames);
 	}
 	printf("  %d frames run, %u presented, %u duped, %u as images\n", frames, s_frames, s_dupes, s_images);
 	if (getenv("VN_HASH_IMAGE"))

@@ -24,7 +24,7 @@
 # not interlaced, two circuits merged by PMODE.ALP or by alpha, a 16-bit
 # display, high-res scanout at 2x, 4x, 4x anti-aliased at the full field
 # height (each with the super sampling it needs), the sharp backbuffer,
-# super sampled textures, and a deinterlace mode.
+# super sampled textures, a deinterlace mode, and a PMODE.ALP fade.
 #
 # Counting by thread needs thread names (pthread_getname_np); elsewhere
 # the runs are made and checked, the counts are not.
@@ -53,7 +53,7 @@ ${CC:-cc} -std=c99 -pedantic -Wall -O2 ${CFLAGS} \
 ${CC:-cc} -std=c89 -pedantic -Wall -Wno-long-long -O2 \
 	-I "$ROOT/libretro/libretro-common/include" \
 	-o "$SCRATCH/swdraw" "$ROOT/tests/swdraw/main.c" $LIBS
-for c in scan_field scan_noninterlaced scan_alp scan_src_alpha scan_ct16s; do
+for c in scan_field scan_noninterlaced scan_alp scan_src_alpha scan_ct16s scan_fade; do
 	"$SCRATCH/swdraw" --bios "$SCRATCH/$c.bin" $c > /dev/null
 done
 
@@ -164,7 +164,7 @@ for damage in short byte version old junk; do
 		short)   head -c $((size - 5)) "$SCRATCH/list.good" > "$LIST" ;;
 		byte)    printf '\377' | dd of="$LIST" bs=1 seek=$((size - 3)) count=1 conv=notrunc 2> /dev/null ;;
 		version) printf '\011' | dd of="$LIST" bs=1 seek=4 count=1 conv=notrunc 2> /dev/null ;;
-		old)     printf '\001' | dd of="$LIST" bs=1 seek=4 count=1 conv=notrunc 2> /dev/null ;;
+		old)     printf '\002' | dd of="$LIST" bs=1 seek=4 count=1 conv=notrunc 2> /dev/null ;;
 		junk)    head -c "$size" /dev/urandom > "$LIST" ;;
 	esac
 	rm -f "$BLOB"
@@ -219,6 +219,17 @@ lane ssaa8         scan_alp "pcsx2_pgs_ssaa=8x SSAA (can high-res)"
 lane sharp         scan_field "pcsx2_pgs_deblur=enabled"
 lane ss_tex        scan_field "pcsx2_pgs_ssaa=4x SSAA (sparse grid);pcsx2_pgs_ss_tex=enabled"
 lane weave_bff     scan_field "pcsx2_deinterlace_mode=Weave BFF"
+
+# A fade: PMODE.ALP steps every vsync. Its blend constant is dynamic
+# state, so one pipeline serves every value - built ahead even cold - and
+# the constant is set as it changes.
+lane fade          scan_fade ""
+if [ "$COUNT" = 1 ]; then
+	[ "$(gfx fade_cold)" -le 1 ] || { echo "pgspipelines: FAIL: fade: $(gfx fade_cold) blend pipelines built on the frame's threads cold"; fail=1; }
+	sets=$(sed -n "s/.*blend constants set \([0-9]*\) times.*/\1/p" "$SCRATCH/fade_warm.log")
+	[ -n "$sets" ] && [ "$sets" -gt 0 ] || { echo "pgspipelines: FAIL: fade: the blend constant was never set"; fail=1; }
+	echo "  fade: blend constant set $sets times in the warm run's frames"
+fi
 
 [ "$fail" = 0 ] || exit 1
 echo "pgspipelines: ok"

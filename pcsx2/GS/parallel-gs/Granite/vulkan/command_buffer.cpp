@@ -1332,6 +1332,12 @@ Pipeline CommandBuffer::build_graphics_pipeline(Device *device, const DeferredPi
 		dynamic_mask |= COMMAND_BUFFER_DIRTY_STENCIL_REFERENCE_BIT;
 	}
 
+	if (compile.static_state.state.dynamic_blend_constants)
+	{
+		states[dyn.dynamicStateCount++] = VK_DYNAMIC_STATE_BLEND_CONSTANTS;
+		dynamic_mask |= COMMAND_BUFFER_DIRTY_BLEND_CONSTANTS_BIT;
+	}
+
 	// Blend state
 	VkPipelineColorBlendAttachmentState blend_attachments[VULKAN_NUM_ATTACHMENTS];
 	VkPipelineColorBlendStateCreateInfo blend = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
@@ -1358,7 +1364,8 @@ Pipeline CommandBuffer::build_graphics_pipeline(Device *device, const DeferredPi
 			}
 		}
 	}
-	memcpy(blend.blendConstants, compile.potential_static_state.blend_constants, sizeof(blend.blendConstants));
+	if (!compile.static_state.state.dynamic_blend_constants)
+		memcpy(blend.blendConstants, compile.potential_static_state.blend_constants, sizeof(blend.blendConstants));
 
 	// Depth state
 	VkPipelineDepthStencilStateCreateInfo ds = { VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
@@ -1740,7 +1747,7 @@ void CommandBuffer::update_hash_graphics_pipeline(DeferredPipelineCompile &compi
 	h.u64(compile.layout->get_hash());
 	h.data(compile.static_state.words, sizeof(compile.static_state.words));
 
-	if (compile.static_state.state.blend_enable)
+	if (compile.static_state.state.blend_enable && !compile.static_state.state.dynamic_blend_constants)
 	{
 		const auto needs_blend_constant = [](VkBlendFactor factor) {
 			return factor == VK_BLEND_FACTOR_CONSTANT_COLOR || factor == VK_BLEND_FACTOR_CONSTANT_ALPHA;
@@ -1795,6 +1802,29 @@ void CommandBuffer::update_hash_graphics_pipeline(DeferredPipelineCompile &compi
 	}
 
 	compile.hash = h.get();
+}
+
+/* Depth bias, stencil reference, blend constants: off the draw path. */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#elif defined(_MSC_VER)
+__declspec(noinline)
+#endif
+void CommandBuffer::flush_dynamic_render_state()
+{
+	if (get_and_clear(current_pipeline.dynamic_mask & COMMAND_BUFFER_DIRTY_DEPTH_BIAS_BIT))
+		table.vkCmdSetDepthBias(cmd, dynamic_state.depth_bias_constant, 0.0f, dynamic_state.depth_bias_slope);
+	if (get_and_clear(current_pipeline.dynamic_mask & COMMAND_BUFFER_DIRTY_STENCIL_REFERENCE_BIT))
+	{
+		table.vkCmdSetStencilCompareMask(cmd, VK_STENCIL_FACE_FRONT_BIT, dynamic_state.front_compare_mask);
+		table.vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_FRONT_BIT, dynamic_state.front_reference);
+		table.vkCmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_FRONT_BIT, dynamic_state.front_write_mask);
+		table.vkCmdSetStencilCompareMask(cmd, VK_STENCIL_FACE_BACK_BIT, dynamic_state.back_compare_mask);
+		table.vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_BACK_BIT, dynamic_state.back_reference);
+		table.vkCmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_BACK_BIT, dynamic_state.back_write_mask);
+	}
+	if (get_and_clear(current_pipeline.dynamic_mask & COMMAND_BUFFER_DIRTY_BLEND_CONSTANTS_BIT))
+		table.vkCmdSetBlendConstants(cmd, dynamic_state.blend_constants);
 }
 
 bool CommandBuffer::flush_graphics_pipeline(bool synchronous)
@@ -1987,17 +2017,12 @@ VkPipeline CommandBuffer::flush_render_state(bool synchronous)
 		table.vkCmdSetScissor(cmd, 0, 1, &tmp_scissor);
 	}
 
-	if (pipeline_state.static_state.state.depth_bias_enable && get_and_clear(COMMAND_BUFFER_DIRTY_DEPTH_BIAS_BIT))
-		table.vkCmdSetDepthBias(cmd, dynamic_state.depth_bias_constant, 0.0f, dynamic_state.depth_bias_slope);
-	if (pipeline_state.static_state.state.stencil_test && get_and_clear(COMMAND_BUFFER_DIRTY_STENCIL_REFERENCE_BIT))
-	{
-		table.vkCmdSetStencilCompareMask(cmd, VK_STENCIL_FACE_FRONT_BIT, dynamic_state.front_compare_mask);
-		table.vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_FRONT_BIT, dynamic_state.front_reference);
-		table.vkCmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_FRONT_BIT, dynamic_state.front_write_mask);
-		table.vkCmdSetStencilCompareMask(cmd, VK_STENCIL_FACE_BACK_BIT, dynamic_state.back_compare_mask);
-		table.vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_BACK_BIT, dynamic_state.back_reference);
-		table.vkCmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_BACK_BIT, dynamic_state.back_write_mask);
-	}
+	/* The bound pipeline's dynamic mask has a bit for each of these only
+	 * when its state takes it: one test for all three. */
+	if (dirty & current_pipeline.dynamic_mask &
+	    (COMMAND_BUFFER_DIRTY_DEPTH_BIAS_BIT | COMMAND_BUFFER_DIRTY_STENCIL_REFERENCE_BIT |
+	     COMMAND_BUFFER_DIRTY_BLEND_CONSTANTS_BIT))
+		flush_dynamic_render_state();
 
 	uint32_t update_vbo_mask = dirty_vbos & active_vbos;
 	for_each_bit_range(update_vbo_mask, [&](uint32_t binding, uint32_t binding_count) {
@@ -3879,7 +3904,8 @@ void CommandBuffer::restore_state(const CommandBufferSavedState &state)
 		if (memcmp(&state.dynamic_state, &dynamic_state, sizeof(dynamic_state)) != 0)
 		{
 			memcpy(&dynamic_state, &state.dynamic_state, sizeof(dynamic_state));
-			set_dirty(COMMAND_BUFFER_DIRTY_STENCIL_REFERENCE_BIT | COMMAND_BUFFER_DIRTY_DEPTH_BIAS_BIT);
+			set_dirty(COMMAND_BUFFER_DIRTY_STENCIL_REFERENCE_BIT | COMMAND_BUFFER_DIRTY_DEPTH_BIAS_BIT |
+			          COMMAND_BUFFER_DIRTY_BLEND_CONSTANTS_BIT);
 		}
 	}
 }

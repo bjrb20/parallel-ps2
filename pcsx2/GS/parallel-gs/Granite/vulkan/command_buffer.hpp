@@ -119,10 +119,12 @@ enum CommandBufferDirtyBits
 	COMMAND_BUFFER_DIRTY_STATIC_VERTEX_BIT = 1 << 6,
 
 	COMMAND_BUFFER_DIRTY_PUSH_CONSTANTS_BIT = 1 << 7,
+	COMMAND_BUFFER_DIRTY_BLEND_CONSTANTS_BIT = 1 << 8,
 
 	COMMAND_BUFFER_DYNAMIC_BITS = COMMAND_BUFFER_DIRTY_VIEWPORT_BIT | COMMAND_BUFFER_DIRTY_SCISSOR_BIT |
 	                              COMMAND_BUFFER_DIRTY_DEPTH_BIAS_BIT |
-	                              COMMAND_BUFFER_DIRTY_STENCIL_REFERENCE_BIT
+	                              COMMAND_BUFFER_DIRTY_STENCIL_REFERENCE_BIT |
+	                              COMMAND_BUFFER_DIRTY_BLEND_CONSTANTS_BIT
 };
 using CommandBufferDirtyFlags = uint32_t;
 
@@ -179,7 +181,10 @@ union PipelineState {
 		uint32_t subgroup_maximum_size_log2_task : 3;
 		uint32_t conservative_raster : 1;
 		uint32_t indirect_bindable : 1;
-		uint32_t padding : 8;
+		/* Blend constants are dynamic state, set by
+		 * set_dynamic_blend_constants: not part of the pipeline. */
+		uint32_t dynamic_blend_constants : 1;
+		uint32_t padding : 7;
 
 		// Word 3
 		uint32_t write_mask;
@@ -205,6 +210,7 @@ struct DynamicState
 	uint8_t back_compare_mask = 0;
 	uint8_t back_write_mask = 0;
 	uint8_t back_reference = 0;
+	float blend_constants[4] = {};
 };
 
 struct VertexAttribState
@@ -793,6 +799,22 @@ public:
 		set_stencil_back_reference(compare_mask, write_mask, reference);
 	}
 
+	/* Blend constants the pipeline takes as dynamic state: one pipeline
+	 * for every value, the value set with vkCmdSetBlendConstants when it
+	 * changes. Static state again after the next clear of the state. */
+	inline void set_dynamic_blend_constants(const float blend_constants[4])
+	{
+		if (!pipeline_state.static_state.state.dynamic_blend_constants)
+		{
+			pipeline_state.static_state.state.dynamic_blend_constants = 1;
+			set_dirty(COMMAND_BUFFER_DIRTY_STATIC_STATE_BIT);
+		}
+		SET_DYNAMIC_STATE(blend_constants[0], COMMAND_BUFFER_DIRTY_BLEND_CONSTANTS_BIT);
+		SET_DYNAMIC_STATE(blend_constants[1], COMMAND_BUFFER_DIRTY_BLEND_CONSTANTS_BIT);
+		SET_DYNAMIC_STATE(blend_constants[2], COMMAND_BUFFER_DIRTY_BLEND_CONSTANTS_BIT);
+		SET_DYNAMIC_STATE(blend_constants[3], COMMAND_BUFFER_DIRTY_BLEND_CONSTANTS_BIT);
+	}
+
 	inline Type get_command_buffer_type() const
 	{
 		return type;
@@ -901,6 +923,7 @@ private:
 	bool flush_compute_pipeline(bool synchronous);
 	bool flush_compute_pipeline_miss(bool synchronous);
 	bool flush_graphics_pipeline_miss(bool synchronous);
+	void flush_dynamic_render_state();
 	void flush_descriptor_sets();
 	void begin_graphics();
 	void flush_descriptor_set(

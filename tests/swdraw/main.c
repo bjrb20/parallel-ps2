@@ -175,6 +175,7 @@ static void sl_put32(unsigned char* p, unsigned v)
 #define SL_BEQ(rs, rt, off)   (0x10000000u | ((rs) << 21) | ((rt) << 16) | ((off) & 0xFFFFu))
 #define SL_ANDI(rt, rs, imm)  (0x30000000u | ((rs) << 21) | ((rt) << 16) | ((imm) & 0xFFFFu))
 #define SL_B(off)             (0x10000000u | ((off) & 0xFFFFu))
+#define SL_SLL(rd, rt, sa)    (0x00000000u | ((rt) << 16) | ((rd) << 11) | ((sa) << 6))
 
 static unsigned sl_emit(unsigned char* rom, unsigned pc, unsigned op)
 {
@@ -211,6 +212,8 @@ static unsigned      s_display_off;        /* PMODE 0, DISPFB1 and DISPLAY1 left
 static unsigned      s_pmode = 0xFF25u;    /* RC1, alpha FF */
 static unsigned      s_disp_psm;           /* DISPFB1's (and 2's) format */
 static unsigned      s_circuit2;           /* DISPFB2 and DISPLAY2 as 1's */
+static unsigned      s_disp2_fbp;          /* DISPFB2's base, in 2048-word pages */
+static unsigned      s_fade_step;          /* PMODE.ALP grows by this every vsync, when set */
 
 /* A case may instead lay out its own quadwords and send them in kicks,
  * each a run of them sent after waiting a number of vsyncs, and then
@@ -700,6 +703,16 @@ static void case_scan_noninterlaced(void) { points_ntsc(); s_smode2 = 0; }
 static void case_scan_alp(void) { points_ntsc(); s_pmode = 0x8027u; s_circuit2 = 1; }  /* EN1 EN2, ALP 0x80 */
 static void case_scan_src_alpha(void) { points_ntsc(); s_pmode = 0x0007u; s_circuit2 = 1; } /* EN1 EN2, MMOD 0 */
 static void case_scan_ct16s(void) { points_ntsc(); s_disp_psm = 0xA; }
+/* Circuit 1 over an empty circuit 2 by PMODE.ALP, which steps through
+ * every value as the frames run: a fade. */
+static void case_scan_fade(void)
+{
+	points_ntsc();
+	s_pmode     = 0x0027u; /* EN1 EN2, MMOD = ALP */
+	s_circuit2  = 1;
+	s_disp2_fbp = 256;
+	s_fade_step = 5;
+}
 
 /* A sprite into each of nine frames in turn, one more than a render
  * pass keeps apart: the ninth ends the pass (a sanitizer build sees what
@@ -1015,6 +1028,7 @@ static const struct { const char* name; void (*build)(void); const char* scale; 
 	{ "scan_alp",        case_scan_alp,      "1" },
 	{ "scan_src_alpha",  case_scan_src_alpha, "1" },
 	{ "scan_ct16s",      case_scan_ct16s,    "1" },
+	{ "scan_fade",       case_scan_fade,     "1" },
 	{ "uv_huge",         case_uv_huge,       "1" },
 	{ "fb_wrap",         case_fb_wrap,       "1" },
 	{ "nine_frames",     case_nine_frames,   "1" },
@@ -1071,7 +1085,7 @@ static int sl_write_bios(const char* path)
 			636u | (50u << 12) | (3u << 23));
 		if (s_circuit2)
 		{
-			pc = sl_emit_store64(rom, pc, 8, 0x90, 0, (s_disp_fbw << 9) | (s_disp_psm << 15)); /* DISPFB2 */
+			pc = sl_emit_store64(rom, pc, 8, 0x90, 0, s_disp2_fbp | (s_disp_fbw << 9) | (s_disp_psm << 15)); /* DISPFB2 */
 			pc = sl_emit_store64(rom, pc, 8, 0xA0, 2559u | (s_disp_dh << 12), /* DISPLAY2        */
 				636u | (50u << 12) | (3u << 23));
 		}
@@ -1176,6 +1190,28 @@ static int sl_write_bios(const char* path)
 			pc = sl_emit_store64(rom, pc, 8, 0x1040, 0, 0);          /* BUSDIR: host to GS      */
 			pc = sl_emit(rom, pc, SL_SW(0, 0, 10));                  /* VIF1_STAT = 0           */
 		}
+	}
+	if (s_fade_step)
+	{
+		/* Fade: every vsync, PMODE.ALP += the step (t3 holds it). */
+		unsigned fade, wait;
+		pc = sl_emit(rom, pc, SL_ORI(11, 0, 0));
+		fade = pc;
+		pc = sl_emit(rom, pc, SL_ORI(9, 0, 8));                      /* clear CSR.VSINT         */
+		pc = sl_emit(rom, pc, SL_SW(9, 0, 24));
+		wait = pc;
+		pc = sl_emit(rom, pc, SL_LW(9, 0, 24));
+		pc = sl_emit(rom, pc, 0);
+		pc = sl_emit(rom, pc, SL_ANDI(9, 9, 8));
+		pc = sl_emit(rom, pc, SL_BEQ(9, 0, (wait - (pc + 4)) >> 2));
+		pc = sl_emit(rom, pc, 0);
+		pc = sl_emit(rom, pc, SL_ADDIU(11, 11, s_fade_step));
+		pc = sl_emit(rom, pc, SL_ANDI(11, 11, 0xFF));
+		pc = sl_emit(rom, pc, SL_SLL(9, 11, 8));
+		pc = sl_emit(rom, pc, SL_ORI(9, 9, s_pmode & 0xFFu));
+		pc = sl_emit(rom, pc, SL_SW(9, 0, 8));                       /* PMODE, low word         */
+		pc = sl_emit(rom, pc, SL_B((fade - (pc + 4)) >> 2));
+		pc = sl_emit(rom, pc, 0);
 	}
 	pc = sl_emit(rom, pc, SL_B(-1));                                 /* spin                    */
 	sl_emit(rom, pc, 0);

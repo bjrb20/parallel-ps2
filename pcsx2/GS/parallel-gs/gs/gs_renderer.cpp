@@ -867,8 +867,8 @@ void GSRenderer::kick_compilation_tasks(const GSOptions &options)
 	 * into the 8-bit RGBA images every circuit, merge and deinterlace
 	 * pass renders to - the four display formats at each super-sample
 	 * count the device can take, read from the buffer or a promoted
-	 * image; the merge's opaque and alpha-blended blits; the weave. A
-	 * blend by PMODE.ALP is one per value, so only the list has those.
+	 * image; the merge's opaque, alpha-blended and PMODE.ALP-blended
+	 * blits (the last with its constant dynamic); the weave.
 	 * They go ahead of the compute variants, after the records, whose
 	 * render passes are only ever made from what the list says. */
 	std::vector<Vulkan::DeferredPipelineCompile> scanout_tasks;
@@ -917,6 +917,14 @@ void GSRenderer::kick_compilation_tasks(const GSOptions &options)
 			                       VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_ZERO);
 			cmd->extract_graphics_pipeline_state(deferred, *pass, 0);
 			scanout_tasks.push_back(deferred);
+			{
+				static const float no_alp[4] = {};
+				cmd->set_blend_factors(VK_BLEND_FACTOR_CONSTANT_ALPHA, VK_BLEND_FACTOR_ONE,
+				                       VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA, VK_BLEND_FACTOR_ZERO);
+				cmd->set_dynamic_blend_constants(no_alp);
+				cmd->extract_graphics_pipeline_state(deferred, *pass, 0);
+				scanout_tasks.push_back(deferred);
+			}
 
 			cmd->set_opaque_sprite_state();
 			cmd->set_program(weave_quad);
@@ -5306,7 +5314,9 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 					float alp = float(uint32_t(priv.pmode.ALP)) * (1.0f / 255.0f);
 					const float alps[4] = { alp, alp, alp, alp };
-					cmd.set_blend_constants(alps);
+					// Dynamic: one pipeline for every ALP, so a fade
+					// builds none.
+					cmd.set_dynamic_blend_constants(alps);
 				}
 			}
 			else
