@@ -593,7 +593,7 @@ bool VMManager::AutoDetectSource(const std::string& filename)
 
 bool VMManager::ApplyBootParameters(VMBootParameters params, std::string* state_to_load)
 {
-	const bool default_fast_boot = Host::OptionFastBoot();
+	const bool default_fast_boot = host_option_fast_boot();
 	EmuConfig.UseBOOT2Injection = params.fast_boot.value_or(default_fast_boot);
 
 	s_elf_override = std::move(params.elf_override);

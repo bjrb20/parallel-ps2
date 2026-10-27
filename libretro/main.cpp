@@ -85,7 +85,6 @@ static bool        s_option_fast_boot = true;
 static int         s_option_camera    = USB_CAMERA_NONE;
 static char        s_option_memcards[PCSX2_PATH_MAX];
 const Pcsx2Config& Host::OptionConfig() { return s_option_config; }
-bool               Host::OptionFastBoot() { return s_option_fast_boot; }
 bool               host_option_fast_boot(void) { return s_option_fast_boot; }
 const char*        Host::OptionMemcardPath() { return s_option_memcards; }
 
