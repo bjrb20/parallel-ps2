@@ -236,6 +236,7 @@ set(pcsx2CDVDSources
 	CDVD/Ps1CD.cpp
 	CDVD/CDVDcommon.cpp
 	CDVD/CDVD.cpp
+	CDVD/CDVDnvram.c
 	CDVD/CDVDisoReader.cpp
 	CDVD/FlatFileReader.cpp
 	CDVD/InputIsoFile.cpp

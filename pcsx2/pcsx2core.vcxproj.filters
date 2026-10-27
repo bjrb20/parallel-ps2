@@ -533,6 +533,9 @@
     <ClCompile Include="CDVD\CDVD.cpp">
       <Filter>System\Ps2\Iop\CDVD</Filter>
     </ClCompile>
+    <ClCompile Include="CDVD\CDVDnvram.c">
+      <Filter>System\Ps2\Iop\CDVD</Filter>
+    </ClCompile>
     <ClCompile Include="CDVD\CDVDcommon.cpp">
       <Filter>System\Ps2\Iop\CDVD</Filter>
     </ClCompile>

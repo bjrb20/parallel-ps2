@@ -64,6 +64,7 @@ s64 PSXCLK = 36864000;
 
 static constexpr size_t NVRAM_SIZE = 1024;
 static u8 s_nvram[NVRAM_SIZE];
+static_assert(NVRAM_SIZE <= CDVD_NVRAM_STORE_MAX, "cdvd_nvram_store compares against a buffer this size");
 
 static constexpr u32 DEFAULT_MECHA_VERSION = 0x00020603;
 static u32 s_mecha_version = 0;
@@ -231,12 +232,12 @@ void cdvdLoadNVRAM(void)
 	{
 		s_mecha_version = DEFAULT_MECHA_VERSION;
 		log_cb(RETRO_LOG_ERROR, "Failed to open or read MEC file at %s, creating default.\n", mecfile);
-		/* Same again: the read may have failed on an open handle, and
-		 * the reopen below would drop it. */
+		/* Closed before the file is replaced: Windows will not rename
+		 * over a file that is still open. */
 		if (fp)
 			filestream_close(fp);
-		fp = filestream_open(mecfile, RETRO_VFS_FILE_ACCESS_READ_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE);
-		if (!fp || filestream_write(fp, &s_mecha_version, sizeof(s_mecha_version)) != (int64_t)sizeof(s_mecha_version))
+		fp = NULL;
+		if (cdvd_nvram_store(mecfile, &s_mecha_version, sizeof(s_mecha_version)) < 0)
 			log_cb(RETRO_LOG_ERROR, "Failed to write MEC file. Check your BIOS setup/permission settings.\n");
 	}
 	if (fp)
@@ -247,32 +248,18 @@ void cdvdSaveNVRAM(void)
 {
 	char nvmfile[PCSX2_PATH_MAX];
 	cdvdBiosSiblingPath(nvmfile, sizeof(nvmfile), "nvm");
-	RFILE *fp = filestream_open(nvmfile, RETRO_VFS_FILE_ACCESS_READ_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE);
-	if (!fp)
+	switch (cdvd_nvram_store(nvmfile, s_nvram, NVRAM_SIZE))
 	{
-		log_cb(RETRO_LOG_ERROR, "Failed to open NVRAM for updating: %s...\n", nvmfile);
-		return;
+		case 0:
+			log_cb(RETRO_LOG_INFO, "NVRAM has not changed, not writing to disk.\n");
+			break;
+		case 1:
+			log_cb(RETRO_LOG_INFO, "NVRAM saved to %s.\n", nvmfile);
+			break;
+		default:
+			log_cb(RETRO_LOG_ERROR, "Failed to save NVRAM to %s\n", nvmfile);
+			break;
 	}
-
-	u8 existing_nvram[NVRAM_SIZE];
-	if (filestream_read(fp, existing_nvram, sizeof(existing_nvram)) == (int64_t)sizeof(existing_nvram) &&
-		memcmp(existing_nvram, s_nvram, NVRAM_SIZE) == 0)
-	{
-		log_cb(RETRO_LOG_WARN, "NVRAM has not changed, not writing to disk.\n");
-		filestream_close(fp);
-		return;
-	}
-
-	if (filestream_seek(fp, 0, RETRO_VFS_SEEK_POSITION_START) == 0 &&
-		filestream_write(fp, s_nvram, NVRAM_SIZE) == (int64_t)NVRAM_SIZE)
-	{
-		log_cb(RETRO_LOG_INFO, "NVRAM saved to %s.\n", nvmfile);
-	}
-	else
-	{
-		log_cb(RETRO_LOG_ERROR, "Failed to save NVRAM to %s\n", nvmfile);
-	}
-	filestream_close(fp);
 }
 
 static void cdvdReadNVM(u8* dst, int offset, int bytes)

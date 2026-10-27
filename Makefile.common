@@ -109,6 +109,7 @@ SOURCES_C += \
 	$(LRPS2_DIR)/GS/Renderers/Common/GSRetireRing.c \
 	$(LRPS2_DIR)/USB/libretro-usb/ohci_dma.c \
 	$(LRPS2_DIR)/memcard_ecc.c \
+	$(LRPS2_DIR)/CDVD/CDVDnvram.c \
 	$(LRPS2_DIR)/NearPlace.c \
 	$(LRPS2_DIR)/Memory.c \
 	$(LRPS2_DIR)/VirtualMemory.c \
