@@ -998,30 +998,37 @@ GSRenderer::GSRenderer(PageTracker &tracker_)
 	: tracker(tracker_), compilation_tasks_active(false)
 {
 	timeline_value = 0;
+	last_submitted_timeline = 0;
+	if (!retro_eventcount_init(&submitted_event) || !retro_eventcount_init(&signalled_event))
+		LOGE("Failed to create the timeline waiter's eventcounts.\n");
 	timeline_thread = PGS::thread([this]() {
 		Util::set_current_thread_name("PGS-Waiter");
 		uint64_t last_waited = 0;
 
 		for (;;)
 		{
-			bool stop;
+			uint64_t submitted = last_submitted_timeline.load(PGS::memory_order_acquire);
+			if (last_waited >= submitted)
 			{
-				PGS::unique_lock holder{timeline_lock};
-				timeline_cond.wait(holder, [&]() { return last_waited < last_submitted_timeline; });
-				stop = last_submitted_timeline == UINT64_MAX;
+				int key = retro_eventcount_prepare_wait(&submitted_event);
+				submitted = last_submitted_timeline.load(PGS::memory_order_acquire);
+				if (last_waited < submitted)
+					retro_eventcount_cancel_wait(&submitted_event);
+				else
+				{
+					retro_eventcount_commit_wait(&submitted_event, key);
+					continue;
+				}
 			}
 
-			if (stop)
+			if (submitted == UINT64_MAX)
 				break;
 
 			last_waited++;
 			timeline->wait_timeline(last_waited);
 
-			{
-				PGS::lock_guard holder{timeline_lock};
-				timeline_value.store(last_waited, PGS::memory_order_release);
-				timeline_cond.notify_all();
-			}
+			timeline_value.store(last_waited, PGS::memory_order_release);
+			retro_eventcount_notify(&signalled_event);
 		}
 	});
 }
@@ -1272,14 +1279,13 @@ GSRenderer::~GSRenderer()
 	flush_submit(0);
 	drain_compilation_tasks();
 
-	{
-		PGS::lock_guard holder{timeline_lock};
-		last_submitted_timeline = UINT64_MAX;
-		timeline_cond.notify_all();
-	}
+	last_submitted_timeline.store(UINT64_MAX, PGS::memory_order_release);
+	retro_eventcount_notify(&submitted_event);
 
 	if (timeline_thread.joinable())
 		timeline_thread.join();
+	retro_eventcount_free(&submitted_event);
+	retro_eventcount_free(&signalled_event);
 
 	check_bug_feedback();
 }
@@ -1289,10 +1295,16 @@ void GSRenderer::wait_timeline(uint64_t value)
 	/* Blocking on the GPU, not doing work. Split out so the transfer zone
 	 * reports CPU cost rather than stall. */
 	PROFILE_SCOPE(ZONE_GS_SYNC);
-	PGS::unique_lock holder{timeline_lock};
-	timeline_cond.wait(holder, [this, value]() {
-		return timeline_value.load(PGS::memory_order_relaxed) >= value;
-	});
+	while (timeline_value.load(PGS::memory_order_acquire) < value)
+	{
+		int key = retro_eventcount_prepare_wait(&signalled_event);
+		if (timeline_value.load(PGS::memory_order_acquire) >= value)
+		{
+			retro_eventcount_cancel_wait(&signalled_event);
+			break;
+		}
+		retro_eventcount_commit_wait(&signalled_event, key);
+	}
 }
 
 uint64_t GSRenderer::query_timeline(const Vulkan::SemaphoreHolder &sem) const
@@ -1422,11 +1434,8 @@ void GSRenderer::flush_submit(uint64_t value)
 	{
 		auto binary = device->request_timeline_semaphore_as_binary(*timeline, value);
 		device->submit_empty(Vulkan::CommandBuffer::Type::Generic, nullptr, binary.get());
-		{
-			PGS::lock_guard holder{timeline_lock};
-			last_submitted_timeline = value;
-			timeline_cond.notify_all();
-		}
+		last_submitted_timeline.store(value, PGS::memory_order_release);
+		retro_eventcount_notify(&submitted_event);
 		// Only a pool exhausted since the last signal waits on this
 		// value; otherwise the signal, an empty queue submission of its
 		// own, says nothing anyone reads. The value stays until it does.

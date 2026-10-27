@@ -6,6 +6,7 @@
 #pragma once
 
 #include "thread_prims.hpp"
+#include <rthreads/retro_eventcount.h>
 #include "gs_registers.hpp"
 #include "device.hpp"
 #include "image.hpp"
@@ -337,10 +338,14 @@ private:
 
 	Vulkan::Semaphore timeline;
 	PGS::thread timeline_thread;
-	uint64_t last_submitted_timeline = 0;
+	/* The last timeline value submitted (UINT64_MAX: stop), which the
+	 * waiter thread parks on, and the last one it has seen signalled,
+	 * which wait_timeline parks on: each published with a release and
+	 * an eventcount notify, so neither side takes a lock. */
+	PGS::atomic_uint64_t last_submitted_timeline;
 	PGS::atomic_uint64_t timeline_value;
-	PGS::condition_variable timeline_cond;
-	PGS::mutex timeline_lock;
+	retro_eventcount_t submitted_event;
+	retro_eventcount_t signalled_event;
 
 	bool last_clut_update_is_read = false;
 	bool field_aware_super_sampling = false;
