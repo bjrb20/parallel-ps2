@@ -245,6 +245,8 @@ public:
 	explicit GSRenderer(PageTracker &tracker);
 	bool init(Vulkan::Device *device, const GSOptions &options);
 	~GSRenderer();
+	/* Stops the threads that build pipelines ahead and joins them. */
+	void stop_compilation_tasks();
 
 	void reserve_primitive_buffers(uint32_t num_primitives);
 	VertexPosition *get_reserved_vertex_positions() const;
@@ -554,7 +556,7 @@ private:
 
 	void drain_compilation_tasks();
 	void drain_compilation_tasks_nonblock();
-	void kick_compilation_tasks();
+	void kick_compilation_tasks(const Vulkan::Device::ComputePipelineRecord *prebuild, unsigned num_prebuild);
 	PGS::atomic_bool compilation_tasks_active;
 
 	/* std::async's future was asked for three things here: run the batch

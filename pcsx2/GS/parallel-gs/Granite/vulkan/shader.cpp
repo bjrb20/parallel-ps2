@@ -1145,6 +1145,26 @@ Pipeline Program::add_pipeline(Hash hash, const Pipeline &pipeline)
 	return pipelines.emplace_yield(hash, pipeline)->get();
 }
 
+Pipeline Program::get_staged_pipeline(Hash hash) const
+{
+	auto *ret = staged.find(hash);
+	return ret ? ret->get() : Pipeline{};
+}
+
+Pipeline Program::add_staged_pipeline(Hash hash, const Pipeline &pipeline)
+{
+	return staged.emplace_yield(hash, pipeline)->get();
+}
+
+/* A staged pipeline a recording thread took is the table's to destroy. */
+void Program::destroy_staged_pipeline(Hash hash, const Pipeline &pipeline)
+{
+	auto *taken = pipelines.find(hash);
+	if (taken && taken->get().pipeline == pipeline.pipeline)
+		return;
+	destroy_pipeline(pipeline);
+}
+
 void Program::destroy_pipeline(const Pipeline &pipeline)
 {
 	device->get_device_table().vkDestroyPipeline(device->get_device(), pipeline.pipeline, nullptr);
@@ -1157,6 +1177,10 @@ void Program::promote_read_write_to_read_only()
 
 Program::~Program()
 {
+	for (auto &pipe : staged.get_read_only())
+		destroy_staged_pipeline(pipe.get_hash(), pipe.get());
+	for (auto &pipe : staged.get_read_write())
+		destroy_staged_pipeline(pipe.get_hash(), pipe.get());
 	for (auto &pipe : pipelines.get_read_only())
 		destroy_pipeline(pipe.get());
 	for (auto &pipe : pipelines.get_read_write())

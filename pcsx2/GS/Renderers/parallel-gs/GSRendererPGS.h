@@ -39,6 +39,17 @@ private:
 	Vulkan::Device dev;
 	ParallelGS::GSInterface iface;
 
+	/* The device's pipeline cache and the list of compute pipelines in
+	 * use, as read at Init: kept to merge into, and to leave a cache
+	 * file that has not changed alone. */
+	uint8_t *pipeline_blob       = nullptr;
+	size_t pipeline_blob_size    = 0;
+	Vulkan::Device::ComputePipelineRecord *pipeline_list = nullptr;
+	unsigned pipeline_list_count = 0;
+	bool pipelines_persist       = false;
+	void load_pipelines();
+	void save_pipelines();
+
 	ParallelGS::SuperSampling current_super_sampling = ParallelGS::SuperSampling::X1;
 	bool current_ordered_super_sampling     = false;
 	bool current_super_sample_textures      = false;

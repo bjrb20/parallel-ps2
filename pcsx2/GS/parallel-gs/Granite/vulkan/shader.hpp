@@ -343,6 +343,10 @@ public:
 
 	Pipeline get_pipeline(Util::Hash hash) const;
 	Pipeline add_pipeline(Util::Hash hash, const Pipeline &pipeline);
+	/* Pipelines built ahead on a compile thread wait here until a
+	 * recording thread misses on one and takes it into the table. */
+	Pipeline get_staged_pipeline(Util::Hash hash) const;
+	Pipeline add_staged_pipeline(Util::Hash hash, const Pipeline &pipeline);
 
 	void promote_read_write_to_read_only();
 
@@ -352,6 +356,8 @@ private:
 	Shader *shaders[Util::ecast(ShaderStage::Count)] = {};
 	const PipelineLayout *layout = nullptr;
 	VulkanCache<Util::IntrusivePODWrapper<Pipeline>> pipelines;
+	VulkanCache<Util::IntrusivePODWrapper<Pipeline>> staged;
 	void destroy_pipeline(const Pipeline &pipeline);
+	void destroy_staged_pipeline(Util::Hash hash, const Pipeline &pipeline);
 };
 }

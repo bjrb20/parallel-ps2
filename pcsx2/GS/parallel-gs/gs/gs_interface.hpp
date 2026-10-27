@@ -225,6 +225,10 @@ struct GSOptions
 	bool dynamic_super_sampling = false; // If super sampling rate can be toggled in-flight.
 	bool ordered_super_sampling = true; // Prefers ordered grid. Aids debugging.
 	bool super_sampled_textures = false;
+	/* Compute pipelines a device recorded before, built ahead of every
+	 * other variant; read during init only. */
+	const Vulkan::Device::ComputePipelineRecord *prebuild = nullptr;
+	unsigned num_prebuild = 0;
 };
 
 // Pragmatic hacks which may or may not be useful.
@@ -275,6 +279,8 @@ public:
 	GSInterface();
 	bool init(Vulkan::Device *device, const GSOptions &options);
 	void reset_context_state();
+	/* Stops the threads that build pipelines ahead and joins them. */
+	void stop_compilation_tasks();
 
 	void set_super_sampling_rate(SuperSampling super_sampling, bool ordered_grid, bool super_sampled_textures);
 	void set_debug_mode(const DebugMode &mode);

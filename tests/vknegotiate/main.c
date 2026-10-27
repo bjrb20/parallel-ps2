@@ -28,11 +28,15 @@
  * and VN_TIMING has the longest frame after the first reported.
  * VN_LOAD_PAUSE_MS leaves that long between the context reset and the
  * first frame, as a frontend's own loading does.
+ * VN_COUNT_PIPELINES counts the pipelines the core builds by the thread
+ * that builds them - its compile threads are named PGS-Compile - and the
+ * longest frame after the first (Linux: thread names).
  *
  * Usage: vknegotiate <path-to-core> <scratch-dir> <v2|v2retry|v1> */
 
 #ifndef _WIN32
 #define _XOPEN_SOURCE 700 /* putenv */
+#define _GNU_SOURCE       /* pthread_getname_np */
 #endif
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,6 +65,7 @@ static void vn_pause_ms(unsigned ms) { Sleep(ms); }
 #else
 #include <dlfcn.h>
 #include <sys/stat.h>
+#include <pthread.h>
 #include <time.h>
 static double vn_now_ms(void)
 {
@@ -117,6 +122,89 @@ static unsigned s_frames, s_dupes, s_images, s_images_set;
 static int s_queue_locked;
 
 static PFN_vkGetInstanceProcAddr gipa;
+
+/* VN_COUNT_PIPELINES: the core's lookups go through these, so its
+ * pipeline creation is counted by the thread that does it. */
+static PFN_vkGetDeviceProcAddr       vn_real_gdpa;
+static PFN_vkCreateComputePipelines  vn_real_ccp;
+static PFN_vkCreateGraphicsPipelines vn_real_cgp;
+static long vn_pipes_frame, vn_pipes_compile;
+
+static void vn_count_pipes(uint32_t n)
+{
+#ifndef _WIN32
+	char name[32] = "";
+	pthread_getname_np(pthread_self(), name, sizeof(name));
+	if (!strncmp(name, "PGS-Compile", 11))
+		__sync_fetch_and_add(&vn_pipes_compile, (long)n);
+	else
+		__sync_fetch_and_add(&vn_pipes_frame, (long)n);
+#else
+	(void)n;
+#endif
+}
+
+/* (a compile thread may still be adding) */
+static long vn_pipes_read(long* counter)
+{
+#ifndef _WIN32
+	return __sync_fetch_and_add(counter, 0);
+#else
+	return *counter;
+#endif
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL vn_ccp(VkDevice d, VkPipelineCache c, uint32_t n,
+	const VkComputePipelineCreateInfo* ci, const VkAllocationCallbacks* a, VkPipeline* out)
+{
+	vn_count_pipes(n);
+	return vn_real_ccp(d, c, n, ci, a, out);
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL vn_cgp(VkDevice d, VkPipelineCache c, uint32_t n,
+	const VkGraphicsPipelineCreateInfo* ci, const VkAllocationCallbacks* a, VkPipeline* out)
+{
+	vn_count_pipes(n);
+	return vn_real_cgp(d, c, n, ci, a, out);
+}
+
+static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vn_count_gdpa(VkDevice d, const char* name)
+{
+	if (!strcmp(name, "vkGetDeviceProcAddr"))
+		return (PFN_vkVoidFunction)vn_count_gdpa;
+	if (!strcmp(name, "vkCreateComputePipelines"))
+	{
+		vn_real_ccp = (PFN_vkCreateComputePipelines)vn_real_gdpa(d, name);
+		return vn_real_ccp ? (PFN_vkVoidFunction)vn_ccp : NULL;
+	}
+	if (!strcmp(name, "vkCreateGraphicsPipelines"))
+	{
+		vn_real_cgp = (PFN_vkCreateGraphicsPipelines)vn_real_gdpa(d, name);
+		return vn_real_cgp ? (PFN_vkVoidFunction)vn_cgp : NULL;
+	}
+	return vn_real_gdpa(d, name);
+}
+
+static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vn_count_gipa(VkInstance inst, const char* name)
+{
+	if (inst && !strcmp(name, "vkGetDeviceProcAddr"))
+	{
+		vn_real_gdpa = (PFN_vkGetDeviceProcAddr)gipa(inst, name);
+		return (PFN_vkVoidFunction)vn_count_gdpa;
+	}
+	if (inst && !strcmp(name, "vkCreateComputePipelines"))
+	{
+		vn_real_ccp = (PFN_vkCreateComputePipelines)gipa(inst, name);
+		return vn_real_ccp ? (PFN_vkVoidFunction)vn_ccp : NULL;
+	}
+	if (inst && !strcmp(name, "vkCreateGraphicsPipelines"))
+	{
+		vn_real_cgp = (PFN_vkCreateGraphicsPipelines)gipa(inst, name);
+		return vn_real_cgp ? (PFN_vkVoidFunction)vn_cgp : NULL;
+	}
+	return gipa(inst, name);
+}
+
 
 /* The alloc modes: VN_ALLOC_OK device memory allocations are granted by
  * vkshim.c, the loader the core finds; this side only knows it is in one. */
@@ -509,7 +597,7 @@ int main(int argc, char** argv)
 		printf("vknegotiate: skip: no Vulkan device\n");
 		return 0;
 	}
-	core_gipa = gipa;
+	core_gipa = getenv("VN_COUNT_PIPELINES") ? vn_count_gipa : gipa;
 
 	strcpy(s_system_dir, argv[2]);
 	sprintf(path, "%s/pcsx2", s_system_dir);
@@ -697,6 +785,9 @@ int main(int argc, char** argv)
 		}
 		if (getenv("VN_TIMING"))
 			printf("  first frame: %.2f ms, longest frame after the first: %.2f ms\n", first, longest);
+		if (getenv("VN_COUNT_PIPELINES"))
+			printf("  pipelines: %ld built on the frame's threads, %ld on compile threads; longest frame after the first %.2f ms\n",
+				vn_pipes_read(&vn_pipes_frame), vn_pipes_read(&vn_pipes_compile), longest);
 	}
 	printf("  %d frames run, %u presented, %u duped, %u as images\n", frames, s_frames, s_dupes, s_images);
 	/* VN_DUMP_STATE: the state after the frames, for another run's to be

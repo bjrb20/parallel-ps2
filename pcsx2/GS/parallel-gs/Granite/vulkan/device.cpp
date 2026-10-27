@@ -88,6 +88,8 @@ Device::Device()
 	, resource_manager(this)
 #endif
 {
+	compute_records = static_cast<ComputePipelineRecord *>(
+			calloc(COMPUTE_PIPELINE_RECORDS, sizeof(ComputePipelineRecord)));
 	cookie.store(0);
 }
 
@@ -749,6 +751,59 @@ void Device::init_pipeline_cache()
 	else if (!init_pipeline_cache(nullptr, 0))
 		LOGE("Failed to initialize pipeline cache.\n");
 #endif
+}
+
+void Device::record_compute_pipeline(const DeferredPipelineCompile &compile)
+{
+	ComputePipelineRecord *r;
+	unsigned i;
+	const uint32_t slot = compute_records_claimed.fetch_add(1);
+
+	if (!compute_records || slot >= COMPUTE_PIPELINE_RECORDS)
+		return;
+	r = &compute_records[slot];
+	r->program_hash      = compile.program->get_hash();
+	r->pipeline_hash     = compile.hash;
+	for (i = 0; i < 4; i++)
+		r->static_words[i] = compile.static_state.words[i];
+	for (i = 0; i < VULKAN_NUM_TOTAL_SPEC_CONSTANTS; i++)
+		r->spec_constants[i] = compile.potential_static_state.spec_constants[i];
+	r->spec_masks        = compile.potential_static_state.spec_constant_mask |
+	                       (uint32_t(compile.potential_static_state.internal_spec_constant_mask) << 8);
+	r->subgroup_size_tag = compile.subgroup_size_tag;
+	compute_records_written.fetch_add(1);
+}
+
+unsigned Device::get_compute_pipeline_records(const ComputePipelineRecord **records) const
+{
+	uint32_t n = compute_records_written.load();
+	*records = compute_records;
+	if (!compute_records)
+		return 0;
+	return n < COMPUTE_PIPELINE_RECORDS ? n : COMPUTE_PIPELINE_RECORDS;
+}
+
+bool Device::resolve_compute_pipeline_record(const ComputePipelineRecord &record,
+                                             DeferredPipelineCompile &compile) const
+{
+	unsigned i;
+	Program *program = programs.find(record.program_hash);
+
+	if (!program || !program->get_shader(ShaderStage::Compute) || !program->get_pipeline_layout())
+		return false;
+	compile = DeferredPipelineCompile();
+	compile.program = program;
+	compile.layout  = program->get_pipeline_layout();
+	for (i = 0; i < 4; i++)
+		compile.static_state.words[i] = record.static_words[i];
+	for (i = 0; i < VULKAN_NUM_TOTAL_SPEC_CONSTANTS; i++)
+		compile.potential_static_state.spec_constants[i] = record.spec_constants[i];
+	compile.potential_static_state.spec_constant_mask          = uint8_t(record.spec_masks & 0xff);
+	compile.potential_static_state.internal_spec_constant_mask = uint8_t((record.spec_masks >> 8) & 0xff);
+	compile.subgroup_size_tag = record.subgroup_size_tag;
+	compile.cache             = legacy_pipeline_cache;
+	CommandBuffer::update_hash_compute_pipeline(compile);
+	return compile.hash == record.pipeline_hash;
 }
 
 size_t Device::get_pipeline_cache_size()
@@ -2134,6 +2189,8 @@ Device::~Device()
 
 	if (table)
 		table->vkDestroyPipelineCache(device, legacy_pipeline_cache, nullptr);
+	free(compute_records);
+	compute_records = nullptr;
 
 	framebuffer_allocator.clear();
 	transient_allocator.clear();

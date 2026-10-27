@@ -525,6 +525,19 @@ void GSRenderer::drain_compilation_tasks()
 	compilation_tasks.clear();
 }
 
+void GSRenderer::stop_compilation_tasks()
+{
+	drain_compilation_tasks();
+}
+
+/* Ascending, for the binary search below. */
+static int compare_hash(const void *a, const void *b)
+{
+	const Util::Hash x = *static_cast<const Util::Hash *>(a);
+	const Util::Hash y = *static_cast<const Util::Hash *>(b);
+	return x < y ? -1 : (x > y ? 1 : 0);
+}
+
 void GSRenderer::drain_compilation_tasks_nonblock()
 {
 	auto itr = std::remove_if(compilation_tasks.begin(), compilation_tasks.end(),
@@ -544,7 +557,8 @@ bool GSRenderer::can_potentially_super_sample() const
 	return buffers.gpu->get_create_info().size > vram_size * 2;
 }
 
-void GSRenderer::kick_compilation_tasks()
+void GSRenderer::kick_compilation_tasks(const Vulkan::Device::ComputePipelineRecord *prebuild,
+                                        unsigned num_prebuild)
 {
 	// Pre-prime all potential shader variants early.
 	std::vector<Vulkan::DeferredPipelineCompile> tasks;
@@ -807,16 +821,48 @@ void GSRenderer::kick_compilation_tasks()
 		device->submit_discard(cmd);
 	}
 
+	/* The pipelines recorded before go first, so what was in use is built
+	 * before the variants that may never be; the enumeration then skips
+	 * them. A record whose program is gone or whose state no longer
+	 * hashes to its key is left out. (The list was made without
+	 * duplicates.) */
+	std::vector<Vulkan::DeferredPipelineCompile> ordered;
+	Util::Hash *first = nullptr;
+	size_t num_first = 0;
+	size_t i;
+
+	ordered.reserve(tasks.size() + num_prebuild);
+	if (num_prebuild)
+		first = static_cast<Util::Hash *>(malloc(num_prebuild * sizeof(*first)));
+	for (i = 0; first && i < num_prebuild; i++)
+	{
+		Vulkan::DeferredPipelineCompile compile;
+		if (!device->resolve_compute_pipeline_record(prebuild[i], compile))
+			continue;
+		ordered.push_back(compile);
+		first[num_first++] = compile.hash;
+	}
+	if (num_first)
+		qsort(first, num_first, sizeof(*first), compare_hash);
+	for (i = 0; i < tasks.size(); i++)
+		if (!num_first || !bsearch(&tasks[i].hash, first, num_first, sizeof(*first), compare_hash))
+			ordered.push_back(tasks[i]);
+	free(first);
+	tasks.swap(ordered);
+
 	size_t num_tasks = tasks.size();
 	size_t target_threads = (cpu_features_get_core_amount() + 1) / 2;
-	size_t tasks_per_thread = num_tasks / target_threads;
+	if (target_threads == 0)
+		target_threads = 1;
 
 	for (size_t thread_index = 0; thread_index < target_threads; thread_index++)
 	{
-		std::vector<Vulkan::DeferredPipelineCompile> deferred(
-			tasks.data() + thread_index * tasks_per_thread,
-			tasks.data() + std::min<size_t>((thread_index + 1) * tasks_per_thread, tasks.size())
-		);
+		/* Dealt in turn, so every thread starts on the recorded ones. */
+		std::vector<Vulkan::DeferredPipelineCompile> deferred;
+		size_t t;
+		deferred.reserve(num_tasks / target_threads + 1);
+		for (t = thread_index; t < num_tasks; t += target_threads)
+			deferred.push_back(tasks[t]);
 
 		auto async_task = std::unique_ptr<CompilationTask>(new CompilationTask);
 		auto *task_state = async_task.get();
@@ -827,6 +873,7 @@ void GSRenderer::kick_compilation_tasks()
 			// Compiles pipelines only, never records a command buffer,
 			// so it can share index 0 rather than take a pool of its own.
 			Util::register_thread_index(0);
+			Util::set_current_thread_name("PGS-Compile");
 			for (auto &task: moved_tasks)
 			{
 				// If we destroy the device before threads are done spinning.
@@ -936,7 +983,7 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 	descriptor_timeline = device->request_semaphore(VK_SEMAPHORE_TYPE_TIMELINE);
 	init_luts();
 
-	kick_compilation_tasks();
+	kick_compilation_tasks(options.prebuild, options.num_prebuild);
 
 	// Reserve 1/3 of our budget to slab-allocate image handles.
 	Vulkan::HeapBudget budgets[VK_MAX_MEMORY_HEAPS] = {};

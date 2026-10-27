@@ -250,6 +250,32 @@ public:
 	// Useful for read-only file mmap.
 	bool init_pipeline_cache(const uint8_t *data, size_t size, bool persistent_mapping = false);
 
+	/* A compute pipeline as it is made, without the driver: the program
+	 * by its hash, the state words, the specialisation constants and the
+	 * subgroup tag. What a thread recording commands took on a miss is
+	 * kept here for the next device to build ahead. */
+	struct ComputePipelineRecord
+	{
+		uint64_t program_hash;
+		uint64_t pipeline_hash;
+		uint32_t static_words[4];
+		uint32_t spec_constants[VULKAN_NUM_TOTAL_SPEC_CONSTANTS];
+		uint32_t spec_masks;       /* user mask | internal mask << 8 */
+		uint32_t subgroup_size_tag;
+	};
+	enum { COMPUTE_PIPELINE_RECORDS = 4096 };
+	void record_compute_pipeline(const DeferredPipelineCompile &compile);
+	/* The records made so far; only while no thread records any. */
+	unsigned get_compute_pipeline_records(const ComputePipelineRecord **records) const;
+	/* The state a record describes, ready to build; false when its
+	 * program is not there or the state no longer hashes to its key. */
+	bool resolve_compute_pipeline_record(const ComputePipelineRecord &record,
+	                                     DeferredPipelineCompile &compile) const;
+	VkPipelineCache get_legacy_pipeline_cache() const
+	{
+		return legacy_pipeline_cache;
+	}
+
 	// Frame-pushing interface.
 	void next_frame_context();
 	bool next_frame_context_is_non_blocking();
@@ -766,6 +792,10 @@ private:
 	TransientAttachmentAllocator transient_allocator;
 	VkPipelineCache legacy_pipeline_cache = VK_NULL_HANDLE;
 	PipelineCache pipeline_binary_cache;
+
+	ComputePipelineRecord *compute_records = nullptr;
+	PGS::atomic_uint32_t compute_records_claimed;
+	PGS::atomic_uint32_t compute_records_written;
 
 	void init_pipeline_cache();
 	void flush_pipeline_cache();

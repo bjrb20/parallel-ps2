@@ -821,6 +821,7 @@ public:
 	};
 	static Pipeline build_graphics_pipeline(Device *device, const DeferredPipelineCompile &compile, CompileMode mode);
 	static Pipeline build_compute_pipeline(Device *device, const DeferredPipelineCompile &compile, CompileMode mode);
+	static void update_hash_compute_pipeline(DeferredPipelineCompile &compile);
 	bool flush_pipeline_state_without_blocking();
 
 	VkPipeline get_current_compute_pipeline();
@@ -891,6 +892,7 @@ private:
 
 	bool flush_graphics_pipeline(bool synchronous);
 	bool flush_compute_pipeline(bool synchronous);
+	bool flush_compute_pipeline_miss(bool synchronous);
 	void flush_descriptor_sets();
 	void begin_graphics();
 	void flush_descriptor_set(
@@ -949,7 +951,6 @@ private:
 	void bind_pipeline(VkPipelineBindPoint bind_point, VkPipeline pipeline, uint32_t active_dynamic_state);
 
 	static void update_hash_graphics_pipeline(DeferredPipelineCompile &compile, uint32_t *active_vbos);
-	static void update_hash_compute_pipeline(DeferredPipelineCompile &compile);
 	void set_surface_transform_specialization_constants();
 
 	void set_program_layout(const PipelineLayout *layout);

@@ -45,6 +45,11 @@ void GSInterface::reset_context_state_registers()
 	clobber_register_state();
 }
 
+void GSInterface::stop_compilation_tasks()
+{
+	renderer.stop_compilation_tasks();
+}
+
 bool GSInterface::init(Vulkan::Device *device, const GSOptions &options)
 {
 	vram_size = options.vram_size;
