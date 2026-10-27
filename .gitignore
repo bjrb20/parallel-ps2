@@ -230,3 +230,4 @@ tests/ata/*.img
 /tests/cam/cam_test_tsan
 /tests/usbstate/usbstate
 /tests/nearplace/nearplace_test*
+/tests/d3d12heap/d3d12heap_test
