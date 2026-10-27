@@ -486,6 +486,37 @@ private:
 	VkShaderModule GetTFXFragmentShader(const GSHWDrawConfig::PSSelector& sel);
 	VkPipeline CreateTFXPipeline(const PipelineSelector& p);
 	VkPipeline GetTFXPipeline(const PipelineSelector& p);
+	VkPipeline GetTFXPipelineMissed(const PipelineSelector& p);
+
+public:
+	/* The pipeline of p from its two shaders, into cache. Reads only what
+	 * the device holds from its creation on, so another thread may call
+	 * it (the warm-up thread, see PipelineWarm). */
+	VkPipeline BuildTFXPipeline(const PipelineSelector& p, VkShaderModule vs, VkShaderModule fs,
+		VkPipelineCache cache) const;
+	struct PipelineWarm;
+
+private:
+	/* The TFX pipelines a session builds are listed by their selectors, in
+	 * a file of their own beside the shader cache that no driver change
+	 * makes stale. The next device hands the list to a thread of its own,
+	 * which builds each one into the pipeline cache from the SPIR-V cache
+	 * and passes it back without a lock; a pipeline missed at draw time
+	 * takes what the thread has finished before it is built here. */
+	PipelineWarm* m_warm = nullptr;
+	PipelineSelector* m_plist = nullptr;
+	u32 m_plist_count = 0;
+	u32 m_plist_cap = 0;
+	bool m_plist_dirty = false;
+	u32 m_pipelines_built_here = 0;
+	u32 m_pipelines_built_ahead = 0; /* by the warm-up thread */
+	u32 m_pipelines_taken = 0;       /* of those, the ones a draw took */
+	void PipelineListLoad();
+	void PipelineListSave();
+	void PipelineListAdd(const PipelineSelector& p);
+	void PipelineWarmStart();
+	void PipelineWarmStop();
+	bool PipelineWarmTake();
 
 	VkShaderModule GetUtilityVertexShader(const char *source, const char* replace_main);
 	VkShaderModule GetUtilityFragmentShader(const char *source, const char* replace_main);

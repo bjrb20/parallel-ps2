@@ -63,6 +63,17 @@ class VKShaderCache
 		VkShaderModule GetFragmentShader(std::string_view shader_code);
 		VkShaderModule GetComputeShader(std::string_view shader_code);
 
+		struct Reader;
+		/* A view of the SPIR-V cache for another thread: the index as it
+		 * stands now, and a read handle on the blob of its own. Made on
+		 * the thread that owns the cache; used and closed on the other.
+		 * False when there is no cache to read. */
+		bool OpenReader(Reader* r) const;
+		/* The SPIR-V of the source, from the reader's index; false when
+		 * the index had none or the blob cannot give it. */
+		static bool ReaderGetSPV(Reader* r, ShaderType type, std::string_view shader_code, SPIRVCodeVector* out);
+		static void CloseReader(Reader* r);
+
 	private:
 		struct CacheIndexKey
 		{
@@ -114,6 +125,7 @@ class VKShaderCache
 
 		RFILE* m_index_file = nullptr;
 		RFILE* m_blob_file = nullptr;
+		std::string m_blob_filename;
 		std::string m_pipeline_cache_filename;
 
 		CacheIndex m_index;
@@ -124,6 +136,12 @@ class VKShaderCache
 		u64 m_pipeline_cache_disk_hash = 0;
 		bool m_pipeline_cache_dirty = false;
 		bool m_pipeline_cache_on_disk = false;
+};
+
+struct VKShaderCache::Reader
+{
+	CacheIndex index;
+	RFILE* blob = nullptr;
 };
 
 extern std::unique_ptr<VKShaderCache> g_vulkan_shader_cache;

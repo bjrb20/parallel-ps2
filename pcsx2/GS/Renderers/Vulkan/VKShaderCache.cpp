@@ -269,6 +269,7 @@ void VKShaderCache::Open()
 		const std::string base_filename = GetShaderCacheBaseFileName(GSConfig.UseDebugDevice);
 		const std::string index_filename = base_filename + ".idx";
 		const std::string blob_filename = base_filename + ".bin";
+		m_blob_filename = blob_filename;
 
 		if (!ReadExistingShaderCache(index_filename, blob_filename))
 			CreateNewShaderCache(index_filename, blob_filename);
@@ -363,10 +364,12 @@ bool VKShaderCache::ReadExistingShaderCache(const std::string& index_filename, c
 		return false;
 	}
 
+	/* The device the index was written on: SPIR-V is the same on every
+	 * device and driver, so another one's is read all the same. */
 	VK_PIPELINE_CACHE_HEADER header;
-	if (filestream_read(m_index_file, &header, sizeof(header)) != (int64_t)(sizeof(header)) || !ValidatePipelineCacheHeader(header))
+	if (filestream_read(m_index_file, &header, sizeof(header)) != (int64_t)(sizeof(header)))
 	{
-		log_cb(RETRO_LOG_ERROR, "Mismatched pipeline cache header in '%s' (GPU/driver changed?)\n", index_filename.c_str());
+		log_cb(RETRO_LOG_ERROR, "Short header in '%s'\n", index_filename.c_str());
 		filestream_close(m_index_file);
 		m_index_file = nullptr;
 		return false;
@@ -599,6 +602,43 @@ std::optional<SPIRVCodeVector> VKShaderCache::GetShaderSPV(
 	}
 
 	return spv;
+}
+
+bool VKShaderCache::OpenReader(Reader* r) const
+{
+	r->index.clear();
+	r->blob = nullptr;
+	if (!m_blob_file || m_index.empty())
+		return false;
+	/* (what is in the index is in the blob already: a blob is written and
+	 * flushed before its entry is) */
+	r->blob = filestream_open(m_blob_filename.c_str(), RETRO_VFS_FILE_ACCESS_READ,
+		RETRO_VFS_FILE_ACCESS_HINT_NONE);
+	if (!r->blob)
+		return false;
+	r->index = m_index;
+	return true;
+}
+
+bool VKShaderCache::ReaderGetSPV(Reader* r, ShaderType type, std::string_view shader_code, SPIRVCodeVector* out)
+{
+	const CacheIndexKey key = GetCacheKey(type, shader_code);
+	const CacheIndex::const_iterator it = r->index.find(key);
+	int64_t bytes;
+	if (!r->blob || it == r->index.end())
+		return false;
+	bytes = (int64_t)sizeof(SPIRVCodeType) * it->second.blob_size;
+	out->resize(it->second.blob_size);
+	return filestream_seek(r->blob, it->second.file_offset, RETRO_VFS_SEEK_POSITION_START) == 0
+		&& filestream_read(r->blob, out->data(), bytes) == bytes;
+}
+
+void VKShaderCache::CloseReader(Reader* r)
+{
+	if (r->blob)
+		filestream_close(r->blob);
+	r->blob = nullptr;
+	r->index.clear();
 }
 
 VkShaderModule VKShaderCache::GetShaderModule(ShaderType type, std::string_view shader_code)

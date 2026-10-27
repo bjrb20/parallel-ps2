@@ -32,6 +32,16 @@
 #include "VKBuilders.h"
 #include "VKShaderCache.h"
 
+#include <file/file_path.h>
+#include <retro_miscellaneous.h>
+#include <streams/file_stream.h>
+#include <xxhash.h>
+#ifdef HAVE_THREADS
+#include <retro_atomic.h>
+#include <retro_spsc.h>
+#include <rthreads/rthreads.h>
+#endif
+
 #include <sstream>
 #include <limits>
 #include <algorithm>
@@ -1722,11 +1732,25 @@ bool GSDeviceVK::Create()
 	}
 
 	InitializeState();
+
+	PipelineListLoad();
+	PipelineWarmStart();
 	return true;
 }
 
 void GSDeviceVK::Destroy()
 {
+	/* First: the thread reads what the rest of this tears down. */
+	PipelineWarmStop();
+	if (m_pipelines_built_here || m_pipelines_built_ahead)
+		log_cb(RETRO_LOG_INFO, "Vulkan pipelines: %u built on the render thread, %u ahead on the warm-up thread, %u of those handed over\n",
+			m_pipelines_built_here, m_pipelines_built_ahead, m_pipelines_taken);
+	PipelineListSave();
+	free(m_plist);
+	m_plist = nullptr;
+	m_plist_count = m_plist_cap = 0;
+	m_pipelines_built_here = m_pipelines_built_ahead = m_pipelines_taken = 0;
+
 	DestroyBase();
 	/* With the pool's textures, and like them ahead of the wait for the
 	 * GPU below. */
@@ -3703,13 +3727,10 @@ void GSDeviceVK::DestroyResources()
 	}
 }
 
-VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
+/* The source of a TFX vertex shader. Reads only the device's features, so
+ * the warm-up thread builds it too. */
+static void TFXVertexShaderSource(std::stringstream& ss, GSHWDrawConfig::VSSelector sel, bool provoking_vertex_last)
 {
-	const auto it = m_tfx_vertex_shaders.find(sel.key);
-	if (it != m_tfx_vertex_shaders.end())
-		return it->second;
-
-	std::stringstream ss;
 	AddShaderHeader(ss);
 	AddShaderStageMacro(ss, true, false, false);
 	AddMacro(ss, "VS_TME", sel.tme);
@@ -3717,22 +3738,27 @@ VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
 	AddMacro(ss, "VS_IIP", sel.iip);
 	AddMacro(ss, "VS_POINT_SIZE", sel.point_size);
 	AddMacro(ss, "VS_EXPAND", static_cast<int>(sel.expand));
-	AddMacro(ss, "VS_PROVOKING_VERTEX_LAST", static_cast<int>(m_features.provoking_vertex_last));
+	AddMacro(ss, "VS_PROVOKING_VERTEX_LAST", static_cast<int>(provoking_vertex_last));
 	ss << tfx_glsl_shader_raw;
+}
 
+VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
+{
+	const auto it = m_tfx_vertex_shaders.find(sel.key);
+	if (it != m_tfx_vertex_shaders.end())
+		return it->second;
+
+	std::stringstream ss;
+	TFXVertexShaderSource(ss, sel, m_features.provoking_vertex_last);
 	VkShaderModule mod = g_vulkan_shader_cache->GetVertexShader(ss.str());
 
 	m_tfx_vertex_shaders.emplace(sel.key, mod);
 	return mod;
 }
 
-VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector& sel)
+/* The source of a TFX fragment shader; as TFXVertexShaderSource. */
+static void TFXFragmentShaderSource(std::stringstream& ss, const GSHWDrawConfig::PSSelector& sel)
 {
-	const auto it = m_tfx_fragment_shaders.find(sel);
-	if (it != m_tfx_fragment_shaders.end())
-		return it->second;
-
-	std::stringstream ss;
 	AddShaderHeader(ss);
 	AddShaderStageMacro(ss, false, false, true);
 	AddMacro(ss, "PS_FST", sel.fst);
@@ -3793,14 +3819,44 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	AddMacro(ss, "PS_NO_COLOR", sel.no_color);
 	AddMacro(ss, "PS_NO_COLOR1", sel.no_color1);
 	ss << tfx_glsl_shader_raw;
+}
 
+VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector& sel)
+{
+	const auto it = m_tfx_fragment_shaders.find(sel);
+	if (it != m_tfx_fragment_shaders.end())
+		return it->second;
+
+	std::stringstream ss;
+	TFXFragmentShaderSource(ss, sel);
 	VkShaderModule mod = g_vulkan_shader_cache->GetFragmentShader(ss.str());
 
 	m_tfx_fragment_shaders.emplace(sel, mod);
 	return mod;
 }
 
+/* The pixel shader a pipeline is made with: blending is off, and its second
+ * output unused, when the colours are masked. */
+static GSHWDrawConfig::PSSelector TFXPipelinePS(const GSDeviceVK::PipelineSelector& p)
+{
+	GSHWDrawConfig::PSSelector pps{p.ps};
+	if (!p.bs.IsEffective(p.cms))
+		pps.no_color1 = true;
+	return pps;
+}
+
 VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
+{
+	VkShaderModule vs = GetTFXVertexShader(p.vs);
+	VkShaderModule fs = GetTFXFragmentShader(TFXPipelinePS(p));
+	if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE)
+		return VK_NULL_HANDLE;
+
+	return BuildTFXPipeline(p, vs, fs, g_vulkan_shader_cache->GetPipelineCache(true));
+}
+
+VkPipeline GSDeviceVK::BuildTFXPipeline(const PipelineSelector& p, VkShaderModule vs, VkShaderModule fs,
+	VkPipelineCache cache) const
 {
 	static constexpr std::array<VkPrimitiveTopology, 3> topology_lookup = {{
 		VK_PRIMITIVE_TOPOLOGY_POINT_LIST, // Point
@@ -3809,18 +3865,11 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 	}};
 
 	GSHWDrawConfig::BlendState pbs{p.bs};
-	GSHWDrawConfig::PSSelector pps{p.ps};
 	if (!p.bs.IsEffective(p.cms))
 	{
 		// disable blending when colours are masked
 		pbs = {};
-		pps.no_color1 = true;
 	}
-
-	VkShaderModule vs = GetTFXVertexShader(p.vs);
-	VkShaderModule fs = GetTFXFragmentShader(pps);
-	if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE)
-		return VK_NULL_HANDLE;
 
 	Vulkan::GraphicsPipelineBuilder gpb;
 	SetPipelineProvokingVertex(m_features, gpb);
@@ -3914,7 +3963,7 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 	if (m_features.framebuffer_fetch && p.IsRTFeedbackLoop())
 		gpb.AddBlendFlags(VK_PIPELINE_COLOR_BLEND_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_BIT_EXT);
 
-	return gpb.Create(vk_init_info.device, g_vulkan_shader_cache->GetPipelineCache(true));
+	return gpb.Create(vk_init_info.device, cache);
 }
 
 VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
@@ -3927,15 +3976,392 @@ VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 	if (it != m_tfx_pipelines.end())
 		pipeline = it->second;
 	else
-	{
-		pipeline = CreateTFXPipeline(p);
-		m_tfx_pipelines.emplace(p, pipeline);
-	}
+		pipeline = GetTFXPipelineMissed(p);
 
 	m_last_tfx_pipeline_selector = p;
 	m_last_tfx_pipeline          = pipeline;
 	return pipeline;
 }
+
+/* A pipeline the map has no entry for: one the warm-up thread finished,
+ * else built here and listed for the next device. Out of line, so the
+ * lookup above stays as small as it was. */
+__noinline VkPipeline GSDeviceVK::GetTFXPipelineMissed(const PipelineSelector& p)
+{
+	VkPipeline pipeline;
+
+	if (m_warm && PipelineWarmTake())
+	{
+		const auto it = m_tfx_pipelines.find(p);
+		if (it != m_tfx_pipelines.end())
+			return it->second;
+	}
+
+	pipeline = CreateTFXPipeline(p);
+	m_tfx_pipelines.emplace(p, pipeline);
+	if (pipeline != VK_NULL_HANDLE)
+	{
+		m_pipelines_built_here++;
+		PipelineListAdd(p);
+	}
+	return pipeline;
+}
+
+/* ------------------------------------------------------------------------
+ *  The pipeline list, and the thread that builds it ahead
+ * ------------------------------------------------------------------------ */
+
+/* The list file: a header, the selectors as the device holds them, and a
+ * hash of all that comes before it. A version or a shader cache version of
+ * another build, a selector of another size, a count the file does not
+ * hold or a hash that does not match: the list is not read, and the one
+ * this session makes replaces it. */
+#define PLIST_MAGIC   0x4C505653u /* "SVPL" */
+#define PLIST_VERSION 1u
+#define PLIST_MAX     65536u
+
+typedef struct PipelineListHeader
+{
+	u32 magic;
+	u32 version;
+	u32 shader_version;
+	u32 entry_size;
+	u32 count;
+} PipelineListHeader;
+
+static void PipelineListPath(char* path, size_t size)
+{
+	fill_pathname_join(path, EmuFolders::Cache,
+		GSConfig.UseDebugDevice ? "vulkan_pipeline_list_debug.bin" : "vulkan_pipeline_list.bin", size);
+}
+
+/* A selector a list may hold: its fields index tables of the size they
+ * have here. */
+static bool PipelineSelectorValid(const GSDeviceVK::PipelineSelector& p)
+{
+	return p.topology < 3 && (!p.bs.enable || p.bs.op < 3);
+}
+
+void GSDeviceVK::PipelineListAdd(const PipelineSelector& p)
+{
+	u32 i;
+	if (GSConfig.DisableShaderCache)
+		return;
+	for (i = 0; i < m_plist_count; i++)
+		if (m_plist[i] == p)
+			return;
+	if (m_plist_count == m_plist_cap)
+	{
+		const u32 cap = m_plist_cap ? m_plist_cap * 2 : 64;
+		PipelineSelector* grown;
+		if (cap > PLIST_MAX)
+			return;
+		grown = (PipelineSelector*)realloc(m_plist, cap * sizeof(*m_plist));
+		if (!grown)
+			return;
+		m_plist     = grown;
+		m_plist_cap = cap;
+	}
+	memcpy(&m_plist[m_plist_count++], &p, sizeof(p));
+	m_plist_dirty = true;
+}
+
+void GSDeviceVK::PipelineListLoad()
+{
+	char path[PATH_MAX_LENGTH];
+	void* data = nullptr;
+	int64_t len = 0;
+	PipelineListHeader h;
+	u64 hash;
+	u32 i;
+
+	m_plist_count = 0;
+	m_plist_dirty = false;
+	if (GSConfig.DisableShaderCache)
+		return;
+	PipelineListPath(path, sizeof(path));
+	if (!path_is_valid(path) || !filestream_read_file(path, &data, &len))
+		return;
+	if (len < (int64_t)(sizeof(h) + sizeof(hash)))
+		goto refuse;
+	memcpy(&h, data, sizeof(h));
+	if (h.magic != PLIST_MAGIC || h.version != PLIST_VERSION || h.shader_version != SHADER_CACHE_VERSION
+		|| h.entry_size != sizeof(PipelineSelector) || h.count > PLIST_MAX
+		|| (int64_t)(sizeof(h) + (u64)h.count * sizeof(PipelineSelector) + sizeof(hash)) != len)
+		goto refuse;
+	memcpy(&hash, (const u8*)data + len - sizeof(hash), sizeof(hash));
+	if (XXH3_64bits(data, (size_t)len - sizeof(hash)) != hash)
+		goto refuse;
+	if (h.count > m_plist_cap)
+	{
+		PipelineSelector* grown = (PipelineSelector*)realloc(m_plist, h.count * sizeof(*m_plist));
+		if (!grown)
+			goto refuse;
+		m_plist     = grown;
+		m_plist_cap = h.count;
+	}
+	for (i = 0; i < h.count; i++)
+	{
+		PipelineSelector p;
+		memcpy(&p, (const u8*)data + sizeof(h) + i * sizeof(p), sizeof(p));
+		if (!PipelineSelectorValid(p))
+			goto refuse;
+		memcpy(&m_plist[i], &p, sizeof(p));
+	}
+	m_plist_count = h.count;
+	free(data);
+	return;
+
+refuse:
+	log_cb(RETRO_LOG_WARN, "Ignoring the pipeline list '%s': not one this build wrote\n", path);
+	m_plist_count = 0;
+	m_plist_dirty = true; /* replaced by this session's */
+	free(data);
+}
+
+void GSDeviceVK::PipelineListSave()
+{
+	char path[PATH_MAX_LENGTH];
+	PipelineListHeader h;
+	size_t size;
+	u8* buf;
+	u64 hash;
+
+	if (!m_plist_dirty || GSConfig.DisableShaderCache)
+		return;
+	PipelineListPath(path, sizeof(path));
+	h.magic          = PLIST_MAGIC;
+	h.version        = PLIST_VERSION;
+	h.shader_version = SHADER_CACHE_VERSION;
+	h.entry_size     = sizeof(PipelineSelector);
+	h.count          = m_plist_count;
+	size = sizeof(h) + (size_t)m_plist_count * sizeof(PipelineSelector) + sizeof(hash);
+	if (!(buf = (u8*)malloc(size)))
+		return;
+	memcpy(buf, &h, sizeof(h));
+	if (m_plist_count)
+		memcpy(buf + sizeof(h), m_plist, (size_t)m_plist_count * sizeof(PipelineSelector));
+	hash = XXH3_64bits(buf, size - sizeof(hash));
+	memcpy(buf + size - sizeof(hash), &hash, sizeof(hash));
+	if (filestream_write_file_atomic(path, buf, (int64_t)size))
+		m_plist_dirty = false;
+	else
+		log_cb(RETRO_LOG_ERROR, "Failed to write the pipeline list '%s'\n", path);
+	free(buf);
+}
+
+#ifdef HAVE_THREADS
+
+typedef struct PipelineWarmResult
+{
+	GSDeviceVK::PipelineSelector sel;
+	VkPipeline pipeline;
+} PipelineWarmResult;
+
+struct GSDeviceVK::PipelineWarm
+{
+	const GSDeviceVK* dev;
+	VkPipelineCache cache;    /* the thread's own, merged at the end */
+	PipelineSelector* list;   /* the thread's own copy */
+	u32 count;
+	u32 built;                /* the thread's; read once it is joined */
+	VKShaderCache::Reader reader;
+	retro_spsc_t results;     /* thread -> render thread */
+	retro_atomic_int_t stop;
+	sthread_t* thread;
+};
+
+/* A shader module from the SPIR-V cache of the source, or none. */
+static VkShaderModule PipelineWarmModule(VKShaderCache::Reader* r, ShaderType type,
+	const std::stringstream& ss, SPIRVCodeVector* spv)
+{
+	VkShaderModuleCreateInfo ci;
+	VkShaderModule mod = VK_NULL_HANDLE;
+	if (!VKShaderCache::ReaderGetSPV(r, type, ss.str(), spv))
+		return VK_NULL_HANDLE;
+	memset(&ci, 0, sizeof(ci));
+	ci.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+	ci.codeSize = spv->size() * sizeof(SPIRVCodeType);
+	ci.pCode    = spv->data();
+	if (vkCreateShaderModule(vk_init_info.device, &ci, nullptr, &mod) != VK_SUCCESS)
+		return VK_NULL_HANDLE;
+	return mod;
+}
+
+/* Builds the list in order, each pipeline from shaders the SPIR-V cache
+ * holds (one it does not hold is left to the render thread), and passes
+ * them back. Never waits: the list is all there is to do. */
+static void PipelineWarmThread(void* data)
+{
+	GSDeviceVK::PipelineWarm* w = (GSDeviceVK::PipelineWarm*)data;
+	const GSDevice::FeatureSupport features = w->dev->Features();
+	/* the modules made, by vertex selector and by the list's index of the
+	 * first pipeline that asked for each pixel shader */
+	VkShaderModule vs_mod[256];
+	u8 vs_tried[256];
+	VkShaderModule* ps_mod = (VkShaderModule*)calloc(w->count ? w->count : 1, sizeof(VkShaderModule));
+	GSHWDrawConfig::PSSelector* ps_sel = (GSHWDrawConfig::PSSelector*)calloc(w->count ? w->count : 1, sizeof(*ps_sel));
+	SPIRVCodeVector spv;
+	u32 ps_count = 0;
+	u32 i, j;
+
+	memset(vs_mod, 0, sizeof(vs_mod));
+	memset(vs_tried, 0, sizeof(vs_tried));
+	if (!ps_mod || !ps_sel)
+		goto done;
+
+	for (i = 0; i < w->count; i++)
+	{
+		const GSDeviceVK::PipelineSelector& p = w->list[i];
+		const GSHWDrawConfig::PSSelector pps = TFXPipelinePS(p);
+		VkShaderModule fs = VK_NULL_HANDLE;
+		PipelineWarmResult res;
+
+		if (retro_atomic_load_acquire_int(&w->stop))
+			break;
+		if (!vs_tried[p.vs.key])
+		{
+			std::stringstream ss;
+			vs_tried[p.vs.key] = 1;
+			TFXVertexShaderSource(ss, p.vs, features.provoking_vertex_last);
+			vs_mod[p.vs.key] = PipelineWarmModule(&w->reader, ShaderType::Vertex, ss, &spv);
+		}
+		for (j = 0; j < ps_count; j++)
+			if (ps_sel[j] == pps)
+				break;
+		if (j == ps_count)
+		{
+			std::stringstream ss;
+			ps_sel[ps_count] = pps;
+			TFXFragmentShaderSource(ss, pps);
+			ps_mod[ps_count++] = PipelineWarmModule(&w->reader, ShaderType::Fragment, ss, &spv);
+		}
+		fs = ps_mod[j];
+		if (vs_mod[p.vs.key] == VK_NULL_HANDLE || fs == VK_NULL_HANDLE)
+			continue;
+
+		res.sel      = p;
+		res.pipeline = w->dev->BuildTFXPipeline(p, vs_mod[p.vs.key], fs, w->cache);
+		if (res.pipeline == VK_NULL_HANDLE)
+			continue;
+		w->built++;
+		/* (room for every one was made at the start) */
+		if (retro_spsc_write_avail(&w->results) < sizeof(res)
+			|| retro_spsc_write(&w->results, &res, sizeof(res)) != sizeof(res))
+			vkDestroyPipeline(vk_init_info.device, res.pipeline, nullptr);
+	}
+
+done:
+	/* a pipeline needs its modules only to be made */
+	for (i = 0; i < 256; i++)
+		if (vs_mod[i] != VK_NULL_HANDLE)
+			vkDestroyShaderModule(vk_init_info.device, vs_mod[i], nullptr);
+	for (i = 0; i < ps_count; i++)
+		if (ps_mod[i] != VK_NULL_HANDLE)
+			vkDestroyShaderModule(vk_init_info.device, ps_mod[i], nullptr);
+	free(ps_mod);
+	free(ps_sel);
+}
+
+void GSDeviceVK::PipelineWarmStart()
+{
+	PipelineWarm* w;
+	VkPipelineCacheCreateInfo ci;
+
+	if (m_warm || !m_plist_count || !g_vulkan_shader_cache)
+		return;
+	if (!(w = (PipelineWarm*)calloc(1, sizeof(*w))))
+		return;
+	new (&w->reader) VKShaderCache::Reader();
+	w->dev   = this;
+	w->count = m_plist_count;
+	retro_atomic_int_init(&w->stop, 0);
+	/* A cache of the thread's own: no object is used by both threads but
+	 * the device. */
+	memset(&ci, 0, sizeof(ci));
+	ci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+	if (vkCreatePipelineCache(vk_init_info.device, &ci, nullptr, &w->cache) != VK_SUCCESS)
+		w->cache = VK_NULL_HANDLE;
+	if (w->cache == VK_NULL_HANDLE
+		|| !(w->list = (PipelineSelector*)malloc(m_plist_count * sizeof(*w->list)))
+		|| !g_vulkan_shader_cache->OpenReader(&w->reader)
+		|| !retro_spsc_init(&w->results, (size_t)m_plist_count * sizeof(PipelineWarmResult)))
+		goto fail;
+	memcpy(w->list, m_plist, m_plist_count * sizeof(*w->list));
+	if (!(w->thread = sthread_create(PipelineWarmThread, w)))
+	{
+		retro_spsc_free(&w->results);
+		goto fail;
+	}
+	m_warm = w;
+	return;
+
+fail:
+	if (w->cache != VK_NULL_HANDLE)
+		vkDestroyPipelineCache(vk_init_info.device, w->cache, nullptr);
+	VKShaderCache::CloseReader(&w->reader);
+	w->reader.~Reader();
+	free(w->list);
+	free(w);
+}
+
+/* Takes what the thread has finished into the map; true if anything. */
+bool GSDeviceVK::PipelineWarmTake()
+{
+	PipelineWarmResult res;
+	bool took = false;
+
+	while (retro_spsc_read_avail(&m_warm->results) >= sizeof(res))
+	{
+		retro_spsc_read(&m_warm->results, &res, sizeof(res));
+		if (!m_tfx_pipelines.emplace(res.sel, res.pipeline).second)
+			vkDestroyPipeline(vk_init_info.device, res.pipeline, nullptr);
+		else
+			m_pipelines_taken++;
+		took = true;
+	}
+	return took;
+}
+
+void GSDeviceVK::PipelineWarmStop()
+{
+	PipelineWarm* w = m_warm;
+	PipelineWarmResult res;
+
+	if (!w)
+		return;
+	retro_atomic_store_release_int(&w->stop, 1);
+	sthread_join(w->thread);
+	/* what the render thread never asked for */
+	while (retro_spsc_read_avail(&w->results) >= sizeof(res))
+	{
+		retro_spsc_read(&w->results, &res, sizeof(res));
+		vkDestroyPipeline(vk_init_info.device, res.pipeline, nullptr);
+	}
+	m_pipelines_built_ahead = w->built;
+	/* what the thread built goes to disk with the rest */
+	if (w->built)
+	{
+		VkPipelineCache main_cache = g_vulkan_shader_cache->GetPipelineCache(true);
+		if (main_cache != VK_NULL_HANDLE)
+			vkMergePipelineCaches(vk_init_info.device, main_cache, 1, &w->cache);
+	}
+	vkDestroyPipelineCache(vk_init_info.device, w->cache, nullptr);
+	retro_spsc_free(&w->results);
+	VKShaderCache::CloseReader(&w->reader);
+	w->reader.~Reader();
+	free(w->list);
+	free(w);
+	m_warm = nullptr;
+}
+
+#else
+
+void GSDeviceVK::PipelineWarmStart() { }
+void GSDeviceVK::PipelineWarmStop() { }
+bool GSDeviceVK::PipelineWarmTake() { return false; }
+
+#endif
 
 bool GSDeviceVK::BindDrawPipeline(const PipelineSelector& p)
 {
