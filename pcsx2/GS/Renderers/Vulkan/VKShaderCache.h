@@ -40,6 +40,10 @@ using SPIRVCodeType = u32;
 using SPIRVCodeVector = std::vector<SPIRVCodeType>;
 
 std::optional<SPIRVCodeVector> CompileShader(ShaderType type, std::string_view source_code, bool debug);
+/* Sets the compiler up for the process. CompileShader does it on first
+ * use; a thread that compiles beside the one that called this first needs
+ * it done before it starts. */
+bool InitializeShaderCompiler();
 
 class VKShaderCache
 {
@@ -73,6 +77,9 @@ class VKShaderCache
 		 * the index had none or the blob cannot give it. */
 		static bool ReaderGetSPV(Reader* r, ShaderType type, std::string_view shader_code, SPIRVCodeVector* out);
 		static void CloseReader(Reader* r);
+		/* SPIR-V compiled elsewhere, put in the cache under its source
+		 * (nothing if the cache has that source already). */
+		void AddSPV(ShaderType type, std::string_view shader_code, const SPIRVCodeVector& spv);
 
 	private:
 		struct CacheIndexKey
@@ -122,6 +129,7 @@ class VKShaderCache
 
 		std::optional<SPIRVCodeVector> CompileAndAddShaderSPV(
 				const CacheIndexKey& key, std::string_view shader_code);
+		void AddKeySPV(const CacheIndexKey& key, const SPIRVCodeVector& spv);
 
 		RFILE* m_index_file = nullptr;
 		RFILE* m_blob_file = nullptr;

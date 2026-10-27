@@ -67,6 +67,11 @@ static bool InitializeGlslang(void)
 	return true;
 }
 
+bool InitializeShaderCompiler()
+{
+	return InitializeGlslang();
+}
+
 void DeinitializeGlslang(void)
 {
 	if (!glslang_initialized)
@@ -680,12 +685,25 @@ std::optional<SPIRVCodeVector> VKShaderCache::CompileAndAddShaderSPV(
 	if (!spv.has_value())
 		return {};
 
+	AddKeySPV(key, *spv);
+	return spv;
+}
+
+void VKShaderCache::AddSPV(ShaderType type, std::string_view shader_code, const SPIRVCodeVector& spv)
+{
+	const CacheIndexKey key = GetCacheKey(type, shader_code);
+	if (m_index.find(key) == m_index.end())
+		AddKeySPV(key, spv);
+}
+
+void VKShaderCache::AddKeySPV(const CacheIndexKey& key, const SPIRVCodeVector& spv)
+{
 	if (!m_blob_file || filestream_seek(m_blob_file, 0, RETRO_VFS_SEEK_POSITION_END) != 0)
-		return spv;
+		return;
 
 	CacheIndexData data;
 	data.file_offset = static_cast<u32>(filestream_tell(m_blob_file));
-	data.blob_size = static_cast<u32>(spv->size());
+	data.blob_size = static_cast<u32>(spv.size());
 
 	CacheIndexEntry entry = {};
 	entry.source_hash_low = key.source_hash_low;
@@ -705,15 +723,14 @@ std::optional<SPIRVCodeVector> VKShaderCache::CompileAndAddShaderSPV(
 	 * something that is not its SPIR-V. Only the second launch ever
 	 * saw it: the first takes the write-only create path. */
 	if (filestream_seek(m_index_file, 0, RETRO_VFS_SEEK_POSITION_END) != 0)
-		return spv;
-	if (filestream_write(m_blob_file, spv->data(), sizeof(SPIRVCodeType) * entry.blob_size) != (int64_t)(sizeof(SPIRVCodeType) * entry.blob_size) ||
+		return;
+	if (filestream_write(m_blob_file, spv.data(), sizeof(SPIRVCodeType) * entry.blob_size) != (int64_t)(sizeof(SPIRVCodeType) * entry.blob_size) ||
 			filestream_flush(m_blob_file) != 0 || filestream_write(m_index_file, &entry, sizeof(entry)) != (int64_t)(sizeof(entry)) ||
 			filestream_flush(m_index_file) != 0)
 	{
 		log_cb(RETRO_LOG_ERROR, "Failed to write shader blob to file\n");
-		return spv;
+		return;
 	}
 
 	m_index.emplace(key, data);
-	return spv;
 }

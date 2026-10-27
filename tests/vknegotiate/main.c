@@ -28,6 +28,9 @@
  * and VN_TIMING has the longest frame after the first reported.
  * VN_LOAD_PAUSE_MS leaves that long between the context reset and the
  * first frame, as a frontend's own loading does.
+ * VN_HASH_IMAGE reads back the last image the core handed over and has
+ * its hash reported, for the pictures of two builds or two runs to be
+ * compared.
  * VN_COUNT_PIPELINES counts the pipelines the core builds by the thread
  * that builds them - its compile threads are named PGS-Compile - and the
  * longest frame after the first (Linux: thread names).
@@ -244,9 +247,15 @@ static void vn_log(enum retro_log_level level, const char* fmt, ...)
 	fflush(stdout);
 }
 
+static unsigned s_last_w, s_last_h;
 static void vn_video(const void* d, unsigned w, unsigned h, size_t p)
 {
-	(void)w; (void)h; (void)p;
+	(void)p;
+	if (d == RETRO_HW_FRAME_BUFFER_VALID)
+	{
+		s_last_w = w;
+		s_last_h = h;
+	}
 	s_frames++;
 	if (!d)
 		s_dupes++;
@@ -296,6 +305,137 @@ static void vn_wait_sync(void *h)
 static void vn_lock(void *h) { (void)h; s_queue_locked++; }
 static void vn_unlock(void *h) { (void)h; s_queue_locked--; }
 static void vn_set_sem(void *h, VkSemaphore s) { (void)h; (void)s; }
+
+/* VN_HASH_IMAGE: the last image handed over, copied to a buffer the host
+ * can read and hashed (FNV-1a over its rows); left in the layout it came
+ * in. 0 when it cannot be read back. */
+static int vn_hash_image(VkInstance inst, VkPhysicalDevice gpu, VkDevice dev, VkQueue queue,
+	uint32_t family, unsigned long long* hash)
+{
+#define VN_DEV(n) PFN_##n p##n = (PFN_##n)pvkGetDeviceProcAddr(dev, #n)
+	VN_DEV(vkCreateBuffer); VN_DEV(vkDestroyBuffer); VN_DEV(vkGetBufferMemoryRequirements);
+	VN_DEV(vkAllocateMemory); VN_DEV(vkFreeMemory); VN_DEV(vkBindBufferMemory);
+	VN_DEV(vkMapMemory); VN_DEV(vkUnmapMemory); VN_DEV(vkCreateCommandPool);
+	VN_DEV(vkDestroyCommandPool); VN_DEV(vkAllocateCommandBuffers); VN_DEV(vkBeginCommandBuffer);
+	VN_DEV(vkEndCommandBuffer); VN_DEV(vkCmdPipelineBarrier); VN_DEV(vkCmdCopyImageToBuffer);
+	VN_DEV(vkQueueSubmit); VN_DEV(vkQueueWaitIdle);
+#undef VN_DEV
+	PFN_vkGetPhysicalDeviceMemoryProperties pmp =
+		(PFN_vkGetPhysicalDeviceMemoryProperties)gipa(inst, "vkGetPhysicalDeviceMemoryProperties");
+	const struct retro_vulkan_image* img = s_last_image;
+	const VkDeviceSize size = (VkDeviceSize)s_last_w * s_last_h * 4;
+	VkPhysicalDeviceMemoryProperties mp;
+	VkBufferCreateInfo bci;
+	VkMemoryRequirements req;
+	VkMemoryAllocateInfo mai;
+	VkCommandPoolCreateInfo pci;
+	VkCommandBufferAllocateInfo cai;
+	VkCommandBufferBeginInfo cbi;
+	VkImageMemoryBarrier ib[2];
+	VkBufferMemoryBarrier bb;
+	VkBufferImageCopy bic;
+	VkSubmitInfo si;
+	VkBuffer buf = VK_NULL_HANDLE;
+	VkDeviceMemory mem = VK_NULL_HANDLE;
+	VkCommandPool pool = VK_NULL_HANDLE;
+	VkCommandBuffer cb = VK_NULL_HANDLE;
+	const unsigned char* p = NULL;
+	unsigned long long h = 14695981039346656037ULL;
+	VkDeviceSize i;
+	uint32_t t;
+	int ok = 0;
+
+	if (!img || !s_images_set || !size || !pmp || !pvkCreateBuffer || !pvkQueueWaitIdle)
+		return 0;
+	pmp(gpu, &mp);
+	memset(&bci, 0, sizeof(bci));
+	bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	bci.size  = size;
+	bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+	if (pvkCreateBuffer(dev, &bci, NULL, &buf) != VK_SUCCESS)
+		return 0;
+	pvkGetBufferMemoryRequirements(dev, buf, &req);
+	for (t = 0; t < mp.memoryTypeCount; t++)
+		if ((req.memoryTypeBits & (1u << t)) && (mp.memoryTypes[t].propertyFlags &
+			(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+			(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+			break;
+	memset(&mai, 0, sizeof(mai));
+	mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	mai.allocationSize  = req.size;
+	mai.memoryTypeIndex = t;
+	memset(&pci, 0, sizeof(pci));
+	pci.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+	pci.queueFamilyIndex = family;
+	if (t == mp.memoryTypeCount || pvkAllocateMemory(dev, &mai, NULL, &mem) != VK_SUCCESS
+		|| pvkBindBufferMemory(dev, buf, mem, 0) != VK_SUCCESS
+		|| pvkCreateCommandPool(dev, &pci, NULL, &pool) != VK_SUCCESS)
+		goto out;
+	memset(&cai, 0, sizeof(cai));
+	cai.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	cai.commandPool        = pool;
+	cai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	cai.commandBufferCount = 1;
+	memset(&cbi, 0, sizeof(cbi));
+	cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	if (pvkAllocateCommandBuffers(dev, &cai, &cb) != VK_SUCCESS || pvkBeginCommandBuffer(cb, &cbi) != VK_SUCCESS)
+		goto out;
+	memset(ib, 0, sizeof(ib));
+	ib[0].sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	ib[0].srcAccessMask       = VK_ACCESS_MEMORY_WRITE_BIT;
+	ib[0].dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
+	ib[0].oldLayout           = img->image_layout;
+	ib[0].newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	ib[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	ib[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	ib[0].image               = img->create_info.image;
+	ib[0].subresourceRange    = img->create_info.subresourceRange;
+	ib[1]                     = ib[0];
+	ib[1].srcAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
+	ib[1].dstAccessMask       = VK_ACCESS_MEMORY_READ_BIT;
+	ib[1].oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	ib[1].newLayout           = img->image_layout;
+	memset(&bic, 0, sizeof(bic));
+	bic.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	bic.imageSubresource.layerCount = 1;
+	bic.imageExtent.width           = s_last_w;
+	bic.imageExtent.height          = s_last_h;
+	bic.imageExtent.depth           = 1;
+	memset(&bb, 0, sizeof(bb));
+	bb.sType               = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+	bb.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+	bb.dstAccessMask       = VK_ACCESS_HOST_READ_BIT;
+	bb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	bb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	bb.buffer              = buf;
+	bb.size                = VK_WHOLE_SIZE;
+	pvkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+		0, NULL, 0, NULL, 1, &ib[0]);
+	pvkCmdCopyImageToBuffer(cb, img->create_info.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &bic);
+	pvkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &bb, 1, &ib[1]);
+	memset(&si, 0, sizeof(si));
+	si.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	si.commandBufferCount = 1;
+	si.pCommandBuffers    = &cb;
+	if (pvkEndCommandBuffer(cb) != VK_SUCCESS || pvkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS
+		|| pvkQueueWaitIdle(queue) != VK_SUCCESS || pvkMapMemory(dev, mem, 0, size, 0, (void**)&p) != VK_SUCCESS)
+		goto out;
+	for (i = 0; i < size; i++)
+		h = (h ^ p[i]) * 1099511628211ULL;
+	pvkUnmapMemory(dev, mem);
+	*hash = h;
+	ok = 1;
+out:
+	if (pool != VK_NULL_HANDLE)
+		pvkDestroyCommandPool(dev, pool, NULL);
+	if (buf != VK_NULL_HANDLE)
+		pvkDestroyBuffer(dev, buf, NULL);
+	if (mem != VK_NULL_HANDLE)
+		pvkFreeMemory(dev, mem, NULL);
+	return ok;
+}
 
 static bool vn_environment(unsigned cmd, void* data)
 {
@@ -790,6 +930,14 @@ int main(int argc, char** argv)
 				vn_pipes_read(&vn_pipes_frame), vn_pipes_read(&vn_pipes_compile), longest);
 	}
 	printf("  %d frames run, %u presented, %u duped, %u as images\n", frames, s_frames, s_dupes, s_images);
+	if (getenv("VN_HASH_IMAGE"))
+	{
+		unsigned long long h;
+		pvkDeviceWaitIdle(ctx.device);
+		if (!vn_hash_image(instance, ctx.gpu, ctx.device, ctx.queue, ctx.queue_family_index, &h))
+			VN_FAIL("the last image could not be read back");
+		printf("  image: %ux%u, hash %016llx\n", s_last_w, s_last_h, h);
+	}
 	/* VN_DUMP_STATE: the state after the frames, for another run's to be
 	 * compared with. */
 	if (getenv("VN_DUMP_STATE"))

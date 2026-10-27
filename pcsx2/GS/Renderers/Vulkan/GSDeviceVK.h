@@ -442,15 +442,43 @@ private:
 
 	std::unordered_map<u32, VkSampler> m_samplers;
 
-	std::array<VkPipeline, static_cast<int>(ShaderConvert::Count)> m_convert{};
-	std::array<VkPipeline, 32> m_color_copy{};
-	std::array<VkPipeline, 2> m_merge{};
-	std::array<VkPipeline, NUM_INTERLACE_SHADERS> m_interlace{};
-	VkPipeline m_vr[2]; /* ps_vr_range, ps_vr_eye */
-	VkPipeline m_hdr_setup_pipelines[2][2] = {}; // [depth][feedback_loop]
-	VkPipeline m_hdr_finish_pipelines[2][2] = {}; // [depth][feedback_loop]
+public:
+	/* The utility pipelines: one table, by these. */
+	enum : u32
+	{
+		UP_CONVERT    = 0,                                                   /* [ShaderConvert] */
+		UP_COPY       = UP_CONVERT + static_cast<u32>(ShaderConvert::Count), /* [rta * 16 + wmask] */
+		UP_HDR_SETUP  = UP_COPY + 32,                                        /* [ds * 2 + fbl] */
+		UP_HDR_FINISH = UP_HDR_SETUP + 4,                                    /* [ds * 2 + fbl] */
+		UP_VR         = UP_HDR_FINISH + 4,                                   /* range, eye */
+		UP_DATE       = UP_VR + 2,                                           /* [ds * 4 + datm] */
+		UP_INTERLACE  = UP_DATE + 8,                                         /* [ShaderInterlace] */
+		UP_MERGE      = UP_INTERLACE + NUM_INTERLACE_SHADERS,                /* [MMOD] */
+		UP_COUNT      = UP_MERGE + 2
+	};
+
+private:
+	/* Built on the warm-up thread when there is one; a pipeline not there
+	 * yet when it is first drawn with is taken from it or built here. */
+	VkPipeline m_util[UP_COUNT] = {};
+	/* each one's render pass, looked up here before the thread starts */
+	VkRenderPass m_util_rp[UP_COUNT] = {};
+	u8 m_util_failed[UP_COUNT] = {};
+	u32 m_util_built_here = 0;
+	u32 m_util_built_creating = 0; /* of those, by the end of Create() */
+	u32 m_util_built_ahead = 0;
+	bool m_device_lost = false;
+	static bool s_util_build_failed;
 	VkRenderPass m_date_image_setup_render_passes[2][2] = {}; // [depth][clear]
-	VkPipeline m_date_image_setup_pipelines[2][4] = {}; // [depth][datm]
+
+	__fi VkPipeline Util(u32 id)
+	{
+		const VkPipeline p = m_util[id];
+		return p ? p : UtilMissed(id);
+	}
+	VkPipeline UtilMissed(u32 id);
+	bool UtilPrepare();
+	bool UtilBuildAll();
 
 	std::unordered_map<u32, VkShaderModule> m_tfx_vertex_shaders;
 	std::unordered_map<GSHWDrawConfig::PSSelector, VkShaderModule, GSHWDrawConfig::PSSelectorHash> m_tfx_fragment_shaders;
@@ -494,6 +522,8 @@ public:
 	 * it (the warm-up thread, see PipelineWarm). */
 	VkPipeline BuildTFXPipeline(const PipelineSelector& p, VkShaderModule vs, VkShaderModule fs,
 		VkPipelineCache cache) const;
+	/* Utility pipeline id from its two shaders, into cache; as above. */
+	VkPipeline BuildUtilityPipeline(u32 id, VkShaderModule vs, VkShaderModule fs, VkPipelineCache cache) const;
 	struct PipelineWarm;
 
 private:
@@ -518,21 +548,12 @@ private:
 	void PipelineWarmStop();
 	bool PipelineWarmTake();
 
-	VkShaderModule GetUtilityVertexShader(const char *source, const char* replace_main);
-	VkShaderModule GetUtilityFragmentShader(const char *source, const char* replace_main);
-	VkShaderModule GetUtilityVertexShader(const std::string& source, const char* replace_main);
-	VkShaderModule GetUtilityFragmentShader(const std::string& source, const char* replace_main);
-
 	bool CreateDeviceAndSwapChain();
 	bool CheckFeatures();
 	bool CreateNullTexture();
 	bool CreateBuffers();
 	bool CreatePipelineLayouts();
 	bool CreateRenderPasses();
-
-	bool CompileConvertPipelines();
-	bool CompileInterlacePipelines();
-	bool CompileMergePipelines();
 
 	void DestroyResources();
 

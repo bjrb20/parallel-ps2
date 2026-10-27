@@ -1,18 +1,23 @@
 #!/bin/sh
-# The Vulkan renderer's TFX pipelines, built ahead from the list a session
-# before left. Boots tests/swdraw's cases through tests/vknegotiate's
-# frontend (lavapipe will do) in one scratch directory, so the cache and
-# the pipeline list carry over from run to run:
+# The Vulkan renderer's pipelines built ahead: the utility ones on every
+# device, the TFX ones from the list a session before left. Boots
+# tests/swdraw's cases through tests/vknegotiate's frontend (lavapipe will
+# do) in one scratch directory, so the cache and the pipeline list carry
+# over from run to run:
 #
-#  - each case run once from nothing builds its pipelines on the render
-#    thread and lists them;
+#  - every run builds no utility pipeline on the render thread while it
+#    creates the device - the warm-up thread builds them all, compiling
+#    what the SPIR-V cache does not hold yet;
+#  - each case run once from nothing builds its TFX pipelines on the
+#    render thread and lists them;
 #  - with the driver's pipeline cache deleted, as a driver update makes it
 #    useless, and the SPIR-V index stamped with another device, each case
 #    again builds none on the render thread - the warm-up thread built
 #    them all from the list, in the second a frontend leaves between
 #    loading and the first frame (VKPW_PAUSE_MS) - and ends in the same
 #    state (but for the sections that hold the clock and the GIF's
-#    timing, which differ between two runs from nothing too);
+#    timing, which differ between two runs from nothing too), with the
+#    same picture presented last;
 #  - a session torn down one frame in, while the thread may still be
 #    building, ends clean and keeps the list;
 #  - a list cut short, with a byte changed, of another version, or not a
@@ -67,7 +72,7 @@ fail=0
 # $1 log name, $2 case, $3 scratch; extra environment from the caller
 run()
 {
-	if ! VN_VERBOSE=1 VN_TIMING=1 VN_IDLE_BIOS=1 LRPS2_BIOS="$WORK/$2.bin" \
+	if ! VN_VERBOSE=1 VN_TIMING=1 VN_HASH_IMAGE=1 VN_IDLE_BIOS=1 LRPS2_BIOS="$WORK/$2.bin" \
 			VN_LOAD_PAUSE_MS=${VKPW_PAUSE_MS:-1000} \
 			timeout 300 "$FE" "$CORE" "$3" v2 > "$WORK/$1.log" 2>&1; then
 		cat "$WORK/$1.log"
@@ -82,6 +87,21 @@ here()
 	echo "${n:-0}"
 }
 ahead() { sed -n 's/.*, \([0-9]*\) ahead on the warm-up thread.*/\1/p' "$WORK/$1.log"; }
+# utility pipelines a run built on the render thread creating the device,
+# and on the warm-up thread
+util_creating() { sed -n 's/.*Vulkan utility pipelines: \([0-9]*\) built on the render thread creating.*/\1/p' "$WORK/$1.log"; }
+util_ahead() { sed -n 's/.*Vulkan utility pipelines: .*, \([0-9]*\) on the warm-up thread.*/\1/p' "$WORK/$1.log"; }
+check_util()
+{
+	# $1 log name; every run builds as many as the first did
+	n=$(util_creating "$1"); a=$(util_ahead "$1")
+	if [ "$n" != 0 ] || [ -z "$a" ] || [ "$a" = 0 ] || { [ -n "$util_ahead_cold" ] && [ "$a" != "$util_ahead_cold" ]; }; then
+		echo "  FAIL: $1: utility pipelines: ${n:-?} built creating the device (none expected), ${a:-none} on the warm-up thread (${util_ahead_cold:-some} expected)"
+		fail=1
+	fi
+}
+# the hash of the last picture a run presented
+image() { sed -n 's/.*image: .*, hash \([0-9a-f]*\).*/\1/p' "$WORK/$1.log"; }
 longest() { sed -n "s/.*first frame: \([^,]*\), longest frame after the first: \(.*\)/\1 then \2/p" "$WORK/$1.log"; }
 
 # A Vulkan device to run on, or a skip (vknegotiate reports none so).
@@ -96,11 +116,15 @@ if grep -q "skip:" "$WORK/probe.log"; then
 	exit 0
 fi
 
-# 1. From nothing: every case lists its pipelines.
+# 1. From nothing: every case lists its pipelines; the first compiles the
+# utility shaders on the warm-up thread.
 for c in $CASES; do
 	VN_DUMP_STATE="$WORK/$c.cold.state" run "$c.cold" $c "$S"
 	[ "$(here "$c.cold")" -gt 0 ] || { echo "  FAIL: $c built no pipeline from nothing"; fail=1; }
+	check_util "$c.cold"
+	[ -n "$util_ahead_cold" ] || [ "$(util_ahead "$c.cold")" = 0 ] || util_ahead_cold=$(util_ahead "$c.cold")
 done
+echo "  utility pipelines on the warm-up thread: ${util_ahead_cold:-none}"
 [ -f "$LIST" ] || { echo "  FAIL: no pipeline list written"; exit 1; }
 
 # The state of a run is the state from nothing, but in the sections that
@@ -123,6 +147,11 @@ same_state()
 		echo "  FAIL: $2 ends in another state than $1 from nothing ($n bytes)"
 		fail=1
 	fi
+	a=$(image "$1.cold"); b=$(image "$2")
+	if [ -z "$a" ] || [ "$a" != "$b" ]; then
+		echo "  FAIL: $2 presents another picture than $1 from nothing (${a:-none}, ${b:-none})"
+		fail=1
+	fi
 }
 
 # The driver's cache gone, the SPIR-V index stamped with another device.
@@ -134,13 +163,15 @@ driver_change()
 	printf '\377' | dd of="$CACHE/vulkan_shaders.idx" bs=1 seek=20 count=1 conv=notrunc 2>/dev/null
 }
 
-# 2. After a driver change: none built on the render thread.
+# 2. After a driver change: none built on the render thread, utility
+# pipelines or TFX ones.
 driver_change
 for c in $CASES; do
 	VN_DUMP_STATE="$WORK/$c.warm.state" run "$c.warm" $c "$S"
 	printf '  %s: %s built on the render thread from nothing (longest frame %s), %s with the list (%s; %s built ahead)\n' \
 		$c "$(here "$c.cold")" "$(longest "$c.cold")" "$(here "$c.warm")" "$(longest "$c.warm")" "$(ahead "$c.warm")"
 	[ "$(here "$c.warm")" = 0 ] || { echo "  FAIL: $c still built $(here "$c.warm") on the render thread"; fail=1; }
+	check_util "$c.warm"
 	same_state $c $c.warm
 done
 
