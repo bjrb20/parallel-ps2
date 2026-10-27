@@ -109,6 +109,44 @@ for renderer in Vulkan paraLLEl-GS; do
 	fi
 done
 
+# A device whose utility pipelines cannot be built (the core's
+# LRPS2_TEST_VK_UTILITY_FAIL hook): lost at their first use, and the GS
+# reopens it. When no device can be made again the GS stops - the
+# frontend is told, frames go on as dupes, a savestate is refused and the
+# core tears down - rather than drawing with no device; when only the
+# first device fails, the second one carries on presenting.
+for fail in always first; do
+	status=0
+	LRPS2_TEST_VK_UTILITY_FAIL=$fail VN_VERBOSE=1 VN_IDLE_BIOS=1 LRPS2_BIOS="$SCRATCH/dest_alpha.bin" \
+		timeout 300 "$DIR/vknegotiate" "$CORE" "$SCRATCH" v2 > "$SCRATCH/lost_$fail.log" 2>&1 || status=$?
+	images=$(sed -n 's/.* \([0-9]*\) as images$/\1/p' "$SCRATCH/lost_$fail.log")
+	stopped=$(grep -c "emulation has stopped" "$SCRATCH/lost_$fail.log") || true
+	lost=$(grep -c "the device is lost" "$SCRATCH/lost_$fail.log") || true
+	if [ $status != 0 ] || [ "${lost:-0}" = 0 ] ||
+			{ [ $fail = always ] && { [ "$stopped" = 0 ] || [ "${images:-x}" != 0 ]; }; } ||
+			{ [ $fail = first ] && { [ "$stopped" != 0 ] || [ "${images:-0}" = 0 ]; }; }; then
+		cat "$SCRATCH/lost_$fail.log"
+		rm -rf "$SCRATCH"
+		echo "  FAIL: utility pipelines failing ($fail): exit $status, ${images:-no} images, stopped $stopped"
+		exit 1
+	fi
+	echo "  utility pipelines failing ($fail): device lost, $([ $fail = always ] && echo "GS stopped cleanly" || echo "reopened, ${images} images")"
+done
+# The same in the Unsynchronized download mode, where the EE thread reads
+# GS memory through the GS's table itself (readback_t4hh's local to host
+# transfers): the GS still stops cleanly. Run against a ThreadSanitizer
+# core, the table cleared under it reports nothing.
+"$SCRATCH/swdraw" --bios "$SCRATCH/readback_t4hh.bin" readback_t4hh
+if ! LRPS2_TEST_VK_UTILITY_FAIL=always VN_HW_DOWNLOAD=Unsynchronized VN_IDLE_BIOS=1 \
+		LRPS2_BIOS="$SCRATCH/readback_t4hh.bin" timeout 300 "$DIR/vknegotiate" "$CORE" "$SCRATCH" v2 \
+		> "$SCRATCH/lost_unsync.log" 2>&1 || ! grep -q "emulation has stopped" "$SCRATCH/lost_unsync.log"; then
+	cat "$SCRATCH/lost_unsync.log"
+	rm -rf "$SCRATCH"
+	echo "  FAIL: utility pipelines failing, Unsynchronized downloads"
+	exit 1
+fi
+echo "  utility pipelines failing, Unsynchronized downloads: GS stopped cleanly"
+
 # 20000 copies in one packet with nothing to end the submission: the
 # batches of copies stay within what one holds.
 "$SCRATCH/swdraw" --bios "$SCRATCH/many_copies.bin" many_copies

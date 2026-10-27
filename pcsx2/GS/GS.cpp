@@ -52,8 +52,10 @@ std::unique_ptr<GSRendererPGS> g_pgs_renderer;
 #include "Renderers/SW/GSDeviceSW.h"
 
 #include <libretro.h>
+#include <retro_atomic.h>
 
 extern retro_hw_render_callback hw_render;
+extern retro_environment_t environ_cb;
 
 int m_disp_fb_sprite_blits = 0;
 
@@ -206,7 +208,61 @@ static void CloseGSDevice(bool clear_state)
  * ask "is it paraLLEl-GS? is it GSdx?" in each of them, under an #ifdef;
  * now it asks nothing, and which renderers exist is a matter for
  * OpenGSRenderer alone. */
-static const struct gs_renderer_ops* s_gs_ops = NULL;
+/* The table, cleared by GSStopWithoutDevice while the EE thread may be in
+ * GSReadLocalMemoryUnsync (the Unsynchronized download mode), so an atomic
+ * pointer. Loads are relaxed: the tables are static const, published with
+ * the image, so nothing is read through the pointer that a store would
+ * have to publish; and the renderer behind a stale table stays alive until
+ * GSclose, which runs with the EE parked. The stores are release, which
+ * costs nothing on x86 and keeps open/close ordered for the others. */
+#ifdef RETRO_ATOMIC_HAS_PTR
+static retro_atomic_ptr_t s_gs_ops_ptr;
+#define GS_OPS() \
+	(static_cast<const struct gs_renderer_ops*>(retro_atomic_load_relaxed_ptr(&s_gs_ops_ptr)))
+#define GS_OPS_SET(t) \
+	retro_atomic_store_release_ptr(&s_gs_ops_ptr, const_cast<void*>(static_cast<const void*>(t)))
+#else
+/* (no pointer atomics on this backend: an aligned pointer-width store,
+ * as before) */
+static const struct gs_renderer_ops* volatile s_gs_ops_ptr = NULL;
+#define GS_OPS() (s_gs_ops_ptr)
+#define GS_OPS_SET(t) (s_gs_ops_ptr = (t))
+#endif
+
+/* Set when the device was lost and no other could be made (GSreopen):
+ * the GS has stopped. Its entry points find no table and do nothing, the
+ * renderer goes at GSclose, and retro_run runs no more frames
+ * (GSHasStopped). Cleared by the next GSopen. */
+static retro_atomic_int_t s_gs_stopped = RETRO_ATOMIC_INT_INITIALIZER(0);
+
+bool GSHasStopped(void)
+{
+	return retro_atomic_load_acquire_int(&s_gs_stopped) != 0;
+}
+
+static void GSStopWithoutDevice(void)
+{
+	static const char text[] = "GS: the video device was lost and could not be recreated; emulation has stopped.";
+	unsigned msg_interface_version = 0;
+
+	/* (called from inside the renderer's vsync: it is closed at GSclose,
+	 * not here, and draws nothing meanwhile) */
+	GS_OPS_SET(NULL);
+	retro_atomic_store_release_int(&s_gs_stopped, 1);
+	log_cb(RETRO_LOG_ERROR, "%s\n", text);
+	environ_cb(RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION, &msg_interface_version);
+	if (msg_interface_version >= 1)
+	{
+		retro_message_ext msg = {text, 10000, 3, RETRO_LOG_ERROR, RETRO_MESSAGE_TARGET_ALL,
+			RETRO_MESSAGE_TYPE_NOTIFICATION, -1};
+		environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE_EXT, &msg);
+	}
+	else
+	{
+		retro_message msg = {text, 600};
+		environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &msg);
+	}
+}
 
 static void gsdx_op_reset(bool hardware_reset)  { g_gs_renderer->Reset(hardware_reset); }
 static void gsdx_op_gif_soft_reset(u32 mask)    { g_gs_renderer->SoftReset(mask); }
@@ -271,7 +327,7 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 		g_pgs_renderer = std::make_unique<GSRendererPGS>(basemem);
 		if (!g_pgs_renderer->Init())
 			return false;
-		s_gs_ops = &pgs_renderer_ops;
+		GS_OPS_SET(&pgs_renderer_ops);
 		return true;
 	}
 	else
@@ -285,14 +341,14 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 		g_gs_renderer->SetRegsMem(basemem);
 		g_gs_renderer->ResetPCRTC();
 		g_gs_renderer->UpdateRenderFixes();
-		s_gs_ops = &gsdx_renderer_ops;
+		GS_OPS_SET(&gsdx_renderer_ops);
 	}
 	return true;
 }
 
 static void CloseGSRenderer(void)
 {
-	s_gs_ops = NULL;
+	GS_OPS_SET(NULL);
 	GSTextureReplacements::Shutdown();
 
 #ifdef HAVE_PARALLEL_GS
@@ -328,16 +384,17 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, const Pcsx2Config::G
 
 	/* Through the table, like everything else here: which renderer this
 	 * is has stopped being this function's business. */
-	if (!s_gs_ops)
+	const struct gs_renderer_ops* ops = GS_OPS();
+	if (!ops)
 		return false;
 
-	u8* basemem = s_gs_ops->regs_mem();
+	u8* basemem = ops->regs_mem();
 
 	freezeData fd = {};
 	std::unique_ptr<u8[]> fd_data;
 	if (recreate_renderer)
 	{
-		if (s_gs_ops->freeze(static_cast<int>(FREEZE_SIZE), &fd) != 0)
+		if (ops->freeze(static_cast<int>(FREEZE_SIZE), &fd) != 0)
 		{
 			log_cb(RETRO_LOG_ERROR, "(GSreopen) Failed to get GS freeze size\n");
 			return false;
@@ -346,7 +403,7 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, const Pcsx2Config::G
 		fd_data = std::make_unique<u8[]>(fd.size);
 		fd.data = fd_data.get();
 
-		if (s_gs_ops->freeze(static_cast<int>(FREEZE_SAVE), &fd) != 0)
+		if (ops->freeze(static_cast<int>(FREEZE_SAVE), &fd) != 0)
 		{
 			log_cb(RETRO_LOG_ERROR, "(GSreopen) Failed to freeze GS\n");
 			return false;
@@ -369,6 +426,7 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, const Pcsx2Config::G
 			if (!OpenGSDevice(GSConfig.Renderer, false))
 			{
 				log_cb(RETRO_LOG_ERROR, "Failed to reopen GS on old config\n");
+				GSStopWithoutDevice();
 				return false;
 			}
 		}
@@ -382,7 +440,7 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, const Pcsx2Config::G
 			return false;
 		}
 
-		if (s_gs_ops->freeze(static_cast<int>(FREEZE_LOAD), &fd) != 0)
+		if (GS_OPS()->freeze(static_cast<int>(FREEZE_LOAD), &fd) != 0)
 		{
 			log_cb(RETRO_LOG_ERROR, "(GSreopen) Failed to defrost\n");
 			return false;
@@ -399,6 +457,7 @@ void GSopen(const Pcsx2Config::GSOptions& config, GSRendererType renderer, enum 
 
 	GSConfig          = config;
 	GSConfig.Renderer = renderer;
+	retro_atomic_store_release_int(&s_gs_stopped, 0);
 
 	if (!OpenGSDevice(renderer, true))
 	{
@@ -421,48 +480,55 @@ void GSclose(void)
 
 void GSreset(bool hardware_reset)
 {
-	if (s_gs_ops && s_gs_ops->reset)
-		s_gs_ops->reset(hardware_reset);
+	const struct gs_renderer_ops* ops = GS_OPS();
+	if (ops && ops->reset)
+		ops->reset(hardware_reset);
 }
 
 void GSgifSoftReset(u32 mask)
 {
-	if (s_gs_ops && s_gs_ops->gif_soft_reset)
-		s_gs_ops->gif_soft_reset(mask);
+	const struct gs_renderer_ops* ops = GS_OPS();
+	if (ops && ops->gif_soft_reset)
+		ops->gif_soft_reset(mask);
 }
 
 void GSInitAndReadFIFO(u8* mem, u32 size)
 {
-	if (s_gs_ops && s_gs_ops->init_and_read_fifo)
-		s_gs_ops->init_and_read_fifo(mem, size);
+	const struct gs_renderer_ops* ops = GS_OPS();
+	if (ops && ops->init_and_read_fifo)
+		ops->init_and_read_fifo(mem, size);
 }
 
 void GSReadLocalMemoryUnsync(u8* mem, u32 qwc, u64 BITBLITBUF, u64 TRXPOS, u64 TRXREG)
 {
-	if (s_gs_ops && s_gs_ops->read_local_memory_unsync)
-		s_gs_ops->read_local_memory_unsync(mem, qwc, BITBLITBUF, TRXPOS, TRXREG);
+	const struct gs_renderer_ops* ops = GS_OPS();
+	if (ops && ops->read_local_memory_unsync)
+		ops->read_local_memory_unsync(mem, qwc, BITBLITBUF, TRXPOS, TRXREG);
 }
 
 void GSgifTransfer(const u8* mem, u32 size)
 {
 	PROFILE_SCOPE(ZONE_GS_TRANSFER);
-	if (s_gs_ops)
-		s_gs_ops->transfer(mem, size);
+	const struct gs_renderer_ops* ops = GS_OPS();
+	if (ops)
+		ops->transfer(mem, size);
 }
 
 void GSvsync(u32 field, bool registers_written)
 {
 	PROFILE_SCOPE(ZONE_GS_VSYNC);
 	PROFILE_FRAME_END();
-	if (s_gs_ops)
-		s_gs_ops->vsync(field, registers_written);
+	const struct gs_renderer_ops* ops = GS_OPS();
+	if (ops)
+		ops->vsync(field, registers_written);
 }
 
 int GSfreeze(FreezeAction mode, freezeData* data)
 {
-	if (!s_gs_ops)
+	const struct gs_renderer_ops* ops = GS_OPS();
+	if (!ops)
 		return -1;
-	return s_gs_ops->freeze(static_cast<int>(mode), data);
+	return ops->freeze(static_cast<int>(mode), data);
 }
 
 void GSGameChanged()
@@ -476,12 +542,14 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config, enum retro_hw_cont
 	Pcsx2Config::GSOptions old_config(std::move(GSConfig));
 	GSConfig = new_config;
 
-	if (s_gs_ops && s_gs_ops->update_config)
-		s_gs_ops->update_config();
+	const struct gs_renderer_ops* ops = GS_OPS();
+	if (ops && ops->update_config)
+		ops->update_config();
 
 	if (GSConfig.Renderer == GSRendererType::Auto)
 		GSConfig.Renderer = GSsetRenderer(api);
-	if (!g_gs_renderer)
+	/* (a stopped GS keeps its renderer to GSclose, but no device) */
+	if (!g_gs_renderer || GSHasStopped())
 		return;
 
 	// Options which aren't using the global struct yet, so we need to recreate all GS objects.

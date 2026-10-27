@@ -22,7 +22,8 @@
  * frames must also arrive as images, unless VN_IDLE_BIOS says the image
  * draws nothing after it boots (tests/swdraw's cases). VN_RENDERER picks
  * the renderer (Vulkan, the default, paraLLEl-GS, or Software (HW) on the
- * Vulkan device) and VN_SCALE its upscale multiplier; VN_EXPECT_RUN names
+ * Vulkan device), VN_SCALE its upscale multiplier and VN_HW_DOWNLOAD its
+ * hardware download mode; VN_EXPECT_RUN names
  * 32-bit words the state at the end must hold 64 of each in a row, and
  * VN_CORRUPT_SHADER_INDEX damages the shader cache a previous run left.
  * VN_DUMP_STATE names a file the state after the frames is written to,
@@ -485,6 +486,7 @@ static bool vn_environment(unsigned cmd, void* data)
 			else if (!strcmp(var->key, "pcsx2_renderer")) var->value = getenv("VN_RENDERER") ? getenv("VN_RENDERER") : "Vulkan";
 			else if (!strcmp(var->key, "pcsx2_fastboot")) var->value = "disabled";
 			else if (!strcmp(var->key, "pcsx2_upscale_multiplier")) var->value = getenv("VN_SCALE");
+			else if (!strcmp(var->key, "pcsx2_hw_download_mode")) var->value = getenv("VN_HW_DOWNLOAD");
 			return var->value != NULL;
 		case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER:
 			/* (what the software renderer on the hardware device asks) */

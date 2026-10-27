@@ -2998,9 +2998,10 @@ void retro_run(void)
 	Input::Update();
 	usb_eyetoy::FrontendRun();
 
-	if (hw_interface_missing)
+	/* No renderer, or a GS that lost its device and could make no other:
+	 * the EE stays parked and the frame is the last. */
+	if (hw_interface_missing || GSHasStopped())
 	{
-		/* No renderer, and the EE stays parked: the frame is the last. */
 		video_cb(NULL, 0, 0, 0);
 		return;
 	}
@@ -3262,6 +3263,9 @@ bool retro_serialize(void* data, size_t size)
 {
 	bool ok;
 
+	/* A GS that stopped (GSHasStopped) has no state to give. */
+	if (GSHasStopped())
+		return false;
 	state_quiesce();
 	/* Straight into the frontend's buffer, which is bounded by size: a
 	 * state that would not fit is refused rather than grown into. */

@@ -1696,6 +1696,15 @@ bool GSDeviceVK::Create()
 		return false;
 	}
 
+	/* For tests/vknegotiate: LRPS2_TEST_VK_UTILITY_FAIL=always fails every
+	 * utility pipeline build, =first only on the process's first device. */
+	{
+		static unsigned s_devices_created;
+		const char* fail = getenv("LRPS2_TEST_VK_UTILITY_FAIL");
+		s_devices_created++;
+		m_test_util_fail = fail && (!strcmp(fail, "always") || (!strcmp(fail, "first") && s_devices_created == 1));
+	}
+
 	if (!CreateRenderPasses() || !UtilPrepare())
 	{
 		log_cb(RETRO_LOG_ERROR, "Failed to create render passes\n");
@@ -3262,6 +3271,8 @@ static void UtilityShaderSource(std::stringstream& ss, u32 id, bool vertex)
 VkPipeline GSDeviceVK::BuildUtilityPipeline(u32 id, VkShaderModule vs, VkShaderModule fs, VkPipelineCache cache) const
 {
 	Vulkan::GraphicsPipelineBuilder gpb;
+	if (m_test_util_fail)
+		return VK_NULL_HANDLE;
 	SetPipelineProvokingVertex(m_features, gpb);
 	AddUtilityVertexAttributes(gpb);
 	gpb.SetPipelineLayout(m_utility_pipeline_layout);

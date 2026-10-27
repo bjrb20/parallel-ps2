@@ -64,6 +64,9 @@ void GSshutdown(void);
 bool GSIsHardwareRenderer(void);
 void GSopen(const Pcsx2Config::GSOptions& config, GSRendererType renderer, enum retro_hw_context_type api, u8* basemem);
 bool GSreopen(bool recreate_device, bool recreate_renderer, const Pcsx2Config::GSOptions& old_config);
+/* True once the GS lost its device and could make no other: it draws and
+ * presents nothing until it is opened again. */
+bool GSHasStopped(void);
 /* What the rest of the core needs of a GS renderer, as a table of plain
  * functions. GS.cpp calls through whichever table is installed and knows
  * nothing else about the renderer behind it: the GSdx renderers fill one
