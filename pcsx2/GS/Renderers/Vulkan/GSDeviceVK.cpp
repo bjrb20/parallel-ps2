@@ -4710,6 +4710,19 @@ __ri void GSDeviceVK::ApplyBaseState(u32 flags, VkCommandBuffer cmdbuf)
 		vkCmdSetLineWidth(cmdbuf, m_current_line_width);
 }
 
+/* Out of room for what a draw binds: the command buffer is executed and
+ * the state applied again into the next one, which has room for it all. */
+__noinline bool GSDeviceVK::RetryTFXState(bool already_execed, const char* what)
+{
+	if (already_execed)
+	{
+		log_cb(RETRO_LOG_ERROR, "Failed to %s\n", what);
+		return false;
+	}
+	ExecuteCommandBufferAndRestartRenderPass(false);
+	return ApplyTFXState(true);
+}
+
 bool GSDeviceVK::ApplyTFXState(bool already_execed)
 {
 	if (m_current_pipeline_layout == PipelineLayout::TFX && m_dirty_flags == 0)
@@ -4724,17 +4737,7 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 	{
 		if (!m_vertex_uniform_stream_buffer.ReserveMemory(
 				sizeof(m_vs_cb_cache), GetUniformBufferAlignment()))
-		{
-			if (already_execed)
-			{
-				log_cb(RETRO_LOG_ERROR, "Failed to reserve vertex uniform space\n");
-				return false;
-			}
-
-			/* Ran out of vertex uniform space */
-			ExecuteCommandBufferAndRestartRenderPass(false);
-			return ApplyTFXState(true);
-		}
+			return RetryTFXState(already_execed, "reserve vertex uniform space");
 
 		memcpy(m_vertex_uniform_stream_buffer.GetCurrentHostPointer(), &m_vs_cb_cache, sizeof(m_vs_cb_cache));
 		m_tfx_dynamic_offsets[0] = m_vertex_uniform_stream_buffer.GetCurrentOffset();
@@ -4746,17 +4749,7 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 	{
 		if (!m_fragment_uniform_stream_buffer.ReserveMemory(
 				sizeof(m_ps_cb_cache), GetUniformBufferAlignment()))
-		{
-			if (already_execed)
-			{
-				log_cb(RETRO_LOG_ERROR, "Failed to reserve pixel uniform space\n");
-				return false;
-			}
-
-			/* Ran out of pixel uniform space */
-			ExecuteCommandBufferAndRestartRenderPass(false);
-			return ApplyTFXState(true);
-		}
+			return RetryTFXState(already_execed, "reserve pixel uniform space");
 
 		memcpy(m_fragment_uniform_stream_buffer.GetCurrentHostPointer(), &m_ps_cb_cache, sizeof(m_ps_cb_cache));
 		m_tfx_dynamic_offsets[1] = m_fragment_uniform_stream_buffer.GetCurrentOffset();
@@ -4778,17 +4771,7 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 	{
 		m_tfx_texture_descriptor_set = AllocateDescriptorSet(m_tfx_sampler_ds_layout);
 		if (m_tfx_texture_descriptor_set == VK_NULL_HANDLE)
-		{
-			if (already_execed)
-			{
-				log_cb(RETRO_LOG_ERROR, "Failed to allocate TFX texture descriptors\n");
-				return false;
-			}
-
-			/* Ran out of TFX texture descriptors */
-			ExecuteCommandBufferAndRestartRenderPass(false);
-			return ApplyTFXState(true);
-		}
+			return RetryTFXState(already_execed, "allocate TFX texture descriptors");
 
 		dsub.AddCombinedImageSamplerDescriptorWrite(
 			m_tfx_texture_descriptor_set, 0, m_tfx_textures[0]->GetView(), m_tfx_sampler, m_tfx_textures[0]->GetVkLayout());
@@ -4807,17 +4790,7 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 	{
 		m_tfx_rt_descriptor_set = AllocateDescriptorSet(m_tfx_rt_texture_ds_layout);
 		if (m_tfx_rt_descriptor_set == VK_NULL_HANDLE)
-		{
-			if (already_execed)
-			{
-				log_cb(RETRO_LOG_ERROR, "Failed to allocate TFX sampler descriptors\n");
-				return false;
-			}
-
-			/* Ran out of TFX sampler descriptors */
-			ExecuteCommandBufferAndRestartRenderPass(false);
-			return ApplyTFXState(true);
-		}
+			return RetryTFXState(already_execed, "allocate TFX sampler descriptors");
 
 		if (m_features.texture_barrier)
 		{

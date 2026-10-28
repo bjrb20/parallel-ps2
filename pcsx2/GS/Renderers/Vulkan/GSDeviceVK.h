@@ -655,6 +655,7 @@ public:
 	/// Binds all dirty state to the command buffer.
 	bool ApplyUtilityState(bool already_execed = false);
 	bool ApplyTFXState(bool already_execed = false);
+	bool RetryTFXState(bool already_execed, const char* what);
 
 	void SetIndexBuffer(VkBuffer buffer);
 	void SetBlendConstants(u8 color);
