@@ -687,7 +687,6 @@ private:
 		PGS::mutex memory_lock;
 		PGS::mutex lock;
 		PGS::condition_variable cond;
-		Util::RWSpinLock read_only_cache;
 		unsigned counter = 0;
 		bool async_frame_context = false;
 	} lock;

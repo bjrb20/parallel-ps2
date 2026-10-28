@@ -25,6 +25,7 @@
 #include "intrusive.hpp"
 #include "object_pool.hpp"
 #include "intrusive_hash_map.hpp"
+#include "insert_only_hash_map.hpp"
 #include "vulkan_headers.hpp"
 
 namespace Vulkan
@@ -34,7 +35,7 @@ using HandleCounter = Util::MultiThreadCounter;
 template <typename T>
 using VulkanObjectPool = Util::ThreadSafeObjectPool<T>;
 template <typename T>
-using VulkanCache = Util::ThreadSafeIntrusiveHashMapReadCached<T>;
+using VulkanCache = Util::InsertOnlyHashMap<T>;
 template <typename T>
 using VulkanCacheReadWrite = Util::ThreadSafeIntrusiveHashMap<T>;
 

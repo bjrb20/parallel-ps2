@@ -77,7 +77,6 @@ CommandBuffer::CommandBuffer(Device *device_, VkCommandBuffer cmd_, VkPipelineCa
 			(features.vk13_props.minSubgroupSize << 0) |
 			(features.vk13_props.maxSubgroupSize << 8);
 
-	device->lock.read_only_cache.lock_read();
 
 	if (type == Type::Generic || type == Type::AsyncCompute)
 	{
@@ -125,7 +124,6 @@ CommandBuffer::~CommandBuffer()
 	VK_ASSERT(!ibo_block.is_mapped());
 	VK_ASSERT(!ubo_block.is_mapped());
 	VK_ASSERT(!staging_block.is_mapped());
-	device->lock.read_only_cache.unlock_read();
 }
 
 void CommandBuffer::fill_buffer(const Buffer &dst, uint32_t value)
@@ -1067,40 +1065,9 @@ static void log_compile_time(const char *tag, Hash hash,
 	}
 }
 
-/* The device's read-only-cache lock, which keeps the caches from being
- * promoted while it is held - except for a build ahead. That touches
- * none of what promotion moves: the program, its shaders and its layout
- * stay where they are, it inserts into no table, and the pipeline cache
- * keeps its own locks. Held there, it would keep promotion off, and
- * every lookup of what is added meanwhile behind a reader lock, for as
- * long as the builders run. */
-struct CacheReadHolder
-{
-	Util::RWSpinLock *lock;
-	explicit CacheReadHolder(Util::RWSpinLock *lock_)
-		: lock(lock_)
-	{
-		if (lock)
-			lock->lock_read();
-	}
-	~CacheReadHolder()
-	{
-		if (lock)
-			lock->unlock_read();
-	}
-};
-#ifndef GRANITE_VULKAN_FOSSILIZE
-#define CACHE_READ_LOCK(mode) ((mode) == CompileMode::AsyncThread ? nullptr : &device->lock.read_only_cache)
-#else
-#define CACHE_READ_LOCK(mode) (&device->lock.read_only_cache)
-#endif
-
 Pipeline CommandBuffer::build_compute_pipeline(Device *device, const DeferredPipelineCompile &compile,
                                                CompileMode mode)
 {
-	// This can be called from outside a CommandBuffer content, so need to hold lock.
-	CacheReadHolder holder{CACHE_READ_LOCK(mode)};
-
 	// If we don't have pipeline creation cache control feature,
 	// we must assume compilation can be synchronous.
 	if (mode == CompileMode::FailOnCompileRequired &&
@@ -1291,9 +1258,6 @@ bool CommandBuffer::setup_subgroup_size_control(
 Pipeline CommandBuffer::build_graphics_pipeline(Device *device, const DeferredPipelineCompile &compile,
                                                 CompileMode mode)
 {
-	// This can be called from outside a CommandBuffer content, so need to hold lock.
-	CacheReadHolder holder{CACHE_READ_LOCK(mode)};
-
 	// If we don't have pipeline creation cache control feature,
 	// we must assume compilation can be synchronous.
 	if (mode == CompileMode::FailOnCompileRequired &&

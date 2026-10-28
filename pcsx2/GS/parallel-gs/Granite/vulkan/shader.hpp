@@ -351,7 +351,6 @@ public:
 	 * or the staged set already has one for @hash. */
 	void stage_pipeline(Util::Hash hash, const Pipeline &pipeline);
 
-	void promote_read_write_to_read_only();
 
 private:
 	void set_shader(ShaderStage stage, Shader *handle);

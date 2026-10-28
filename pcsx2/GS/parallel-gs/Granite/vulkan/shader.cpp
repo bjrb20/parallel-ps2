@@ -1170,19 +1170,13 @@ void Program::destroy_pipeline(const Pipeline &pipeline)
 	device->get_device_table().vkDestroyPipeline(device->get_device(), pipeline.pipeline, nullptr);
 }
 
-void Program::promote_read_write_to_read_only()
-{
-	pipelines.move_to_read_only();
-}
-
 Program::~Program()
 {
 	/* (one taken left the set: what is here was never used) */
 	for (auto &pipe : staged)
 		destroy_pipeline(pipe.get());
-	for (auto &pipe : pipelines.get_read_only())
+	pipelines.for_each([this](Util::IntrusivePODWrapper<Pipeline> &pipe) {
 		destroy_pipeline(pipe.get());
-	for (auto &pipe : pipelines.get_read_write())
-		destroy_pipeline(pipe.get());
+	});
 }
 }

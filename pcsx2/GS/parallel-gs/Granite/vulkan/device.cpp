@@ -53,7 +53,6 @@ static unsigned get_thread_index()
 }
 #define LOCK() PGS::lock_guard _holder_##__COUNTER__{lock.lock}
 #define LOCK_MEMORY() PGS::lock_guard _holder_##__COUNTER__{lock.memory_lock}
-#define LOCK_CACHE() ::Util::RWSpinLockReadHolder _holder_##__COUNTER__{lock.read_only_cache}
 #define DRAIN_FRAME_LOCK() \
 	PGS::unique_lock _holder{lock.lock}; \
 	lock.cond.wait(_holder, [&]() { \
@@ -377,7 +376,6 @@ void Device::unmap_host_buffer(const Buffer &buffer, MemoryAccessFlags access, V
 Shader *Device::request_shader(const uint32_t *data, size_t size, const ResourceLayout *layout)
 {
 	auto hash = Shader::hash(data, size);
-	LOCK_CACHE();
 	auto *ret = shaders.find(hash);
 	if (!ret)
 		ret = shaders.emplace_yield(hash, hash, this, data, size, layout);
@@ -386,7 +384,6 @@ Shader *Device::request_shader(const uint32_t *data, size_t size, const Resource
 
 Shader *Device::request_shader_by_hash(Hash hash)
 {
-	LOCK_CACHE();
 	return shaders.find(hash);
 }
 
@@ -399,7 +396,6 @@ Program *Device::request_program(Vulkan::Shader *compute_shader, const Immutable
 	hasher.u64(compute_shader->get_hash());
 	ImmutableSamplerBank::hash(hasher, sampler_bank);
 
-	LOCK_CACHE();
 	auto hash = hasher.get();
 	auto *ret = programs.find(hash);
 	if (!ret)
@@ -427,7 +423,6 @@ Program *Device::request_program(Shader *vertex, Shader *fragment, const Immutab
 	ImmutableSamplerBank::hash(hasher, sampler_bank);
 
 	auto hash = hasher.get();
-	LOCK_CACHE();
 	auto *ret = programs.find(hash);
 
 	if (!ret)
@@ -459,7 +454,6 @@ Program *Device::request_program(Shader *task, Shader *mesh, Shader *fragment, c
 	ImmutableSamplerBank::hash(hasher, sampler_bank);
 
 	auto hash = hasher.get();
-	LOCK_CACHE();
 	auto *ret = programs.find(hash);
 
 	if (!ret)
@@ -536,7 +530,6 @@ DescriptorSetAllocator *Device::request_descriptor_set_allocator(const Descripto
 	});
 	auto hash = h.get();
 
-	LOCK_CACHE();
 	auto *ret = descriptor_set_allocators.find(hash);
 	if (!ret)
 		ret = descriptor_set_allocators.emplace_yield(hash, hash, this, layout, stages_for_bindings, immutable_samplers_);
@@ -2824,10 +2817,9 @@ void Device::wait_idle_nolock()
 
 	if (!ext.supports_descriptor_buffer_or_heap)
 	{
-		for (auto &allocator: descriptor_set_allocators.get_read_only())
+		descriptor_set_allocators.for_each([](DescriptorSetAllocator &allocator) {
 			allocator.clear();
-		for (auto &allocator: descriptor_set_allocators.get_read_write())
-			allocator.clear();
+		});
 	}
 
 	for (auto &frame : per_frame)
@@ -2842,27 +2834,16 @@ void Device::wait_idle_nolock()
 	}
 }
 
+/* The device's caches (pipeline layouts, descriptor set allocators,
+ * shaders, programs and their pipelines, render passes, immutable
+ * samplers and conversions) are insert-only maps that lookups read
+ * without a lock (Util::InsertOnlyHashMap): there is nothing to promote
+ * and no lock for a reader to hold. */
 void Device::promote_read_write_caches_to_read_only()
 {
-	// Components which could potentially call into these must hold global reader locks.
-	// - A CommandBuffer holds a read lock for its lifetime.
-	// - Fossilize replay in the background also holds lock.
-	if (lock.read_only_cache.try_lock_write())
-	{
-		pipeline_layouts.move_to_read_only();
-		descriptor_set_allocators.move_to_read_only();
-		shaders.move_to_read_only();
-		programs.move_to_read_only();
-		for (auto &program : programs.get_read_only())
-			program.promote_read_write_to_read_only();
-		render_passes.move_to_read_only();
-		immutable_samplers.move_to_read_only();
-		immutable_ycbcr_conversions.move_to_read_only();
 #ifdef GRANITE_VULKAN_SYSTEM_HANDLES
-		shader_manager.promote_read_write_caches_to_read_only();
+	shader_manager.promote_read_write_caches_to_read_only();
 #endif
-		lock.read_only_cache.unlock_write();
-	}
 }
 
 void Device::set_enable_async_thread_frame_context(bool enable)
@@ -2913,10 +2894,9 @@ void Device::next_frame_context()
 
 	if (!ext.supports_descriptor_buffer_or_heap)
 	{
-		for (auto &allocator: descriptor_set_allocators.get_read_only())
+		descriptor_set_allocators.for_each([](DescriptorSetAllocator &allocator) {
 			allocator.begin_frame();
-		for (auto &allocator: descriptor_set_allocators.get_read_write())
-			allocator.begin_frame();
+		});
 	}
 
 	VK_ASSERT(!per_frame.empty());
@@ -4838,7 +4818,6 @@ const ImmutableSampler *Device::request_immutable_sampler(const SamplerCreateInf
 	else
 		h.u32(0);
 
-	LOCK_CACHE();
 	auto *sampler = immutable_samplers.find(h.get());
 	if (!sampler)
 		sampler = immutable_samplers.emplace_yield(h.get(), h.get(), this, sampler_info, ycbcr);
@@ -4862,7 +4841,6 @@ const ImmutableYcbcrConversion *Device::request_immutable_ycbcr_conversion(
 	h.u32(info.ycbcrModel);
 	h.u32(info.ycbcrRange);
 
-	LOCK_CACHE();
 	auto *sampler = immutable_ycbcr_conversions.find(h.get());
 	if (!sampler)
 		sampler = immutable_ycbcr_conversions.emplace_yield(h.get(), h.get(), this, info);
