@@ -194,4 +194,12 @@ VULKAN_DEVICE_ENTRY_POINT(vkBindImageMemory2, true)
 // VK_KHR_push_descriptor
 VULKAN_DEVICE_ENTRY_POINT(vkCmdPushDescriptorSetKHR, false)
 
+// VK_EXT_extended_dynamic_state (core in Vulkan 1.3 without the suffix,
+// resolved under those names when the extension is not there)
+VULKAN_DEVICE_ENTRY_POINT(vkCmdSetDepthTestEnableEXT, false)
+VULKAN_DEVICE_ENTRY_POINT(vkCmdSetDepthWriteEnableEXT, false)
+VULKAN_DEVICE_ENTRY_POINT(vkCmdSetDepthCompareOpEXT, false)
+VULKAN_DEVICE_ENTRY_POINT(vkCmdSetStencilTestEnableEXT, false)
+VULKAN_DEVICE_ENTRY_POINT(vkCmdSetStencilOpEXT, false)
+
 #endif // VULKAN_DEVICE_ENTRY_POINT

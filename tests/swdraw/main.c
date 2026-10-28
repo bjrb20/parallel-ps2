@@ -959,6 +959,50 @@ static void case_frame_on_depth32(void)
 	ad(GS_XYZ2, 0, XY(0, 64));
 }
 
+/* Sprites that differ only in their depth and destination alpha tests:
+ * a 32-bit depth buffer at page 150 written with ZTST always under two
+ * halves of the frame, one of alpha 0 and one of alpha 0x80; then
+ * sprites tested GEQUAL and GREATER against it, written and not (ZMSK);
+ * then the destination alpha test, DATM 0 and 1, across both halves. A
+ * renderer that keys its pipelines by the depth/stencil state builds one
+ * per test; one that sets that state per draw builds one for them all,
+ * and draws the same picture. */
+static void case_depth_states(void)
+{
+	ad_common();
+	ad(GS_ZBUF_1, 0, 150ul);                       /* ZBP 150, PSMZ32, written */
+	ad(GS_PRIM, 0, 6);                             /* sprite */
+	ad(GS_RGBAQ, 0x3f800000ul, 0x00402010ul);      /* alpha 0 */
+	ad(GS_XYZ2, 0x1000ul, XY(0, 0));
+	ad(GS_XYZ2, 0x1000ul, XY(320, 448));
+	ad(GS_RGBAQ, 0x3f800000ul, 0x80102040ul);      /* alpha 0x80 */
+	ad(GS_XYZ2, 0x1000ul, XY(320, 0));
+	ad(GS_XYZ2, 0x1000ul, XY(640, 448));
+	ad(GS_TEST_1, 0, (1ul << 16) | (2ul << 17));   /* ZTST GEQUAL: passes */
+	ad(GS_RGBAQ, 0x3f800000ul, 0x00f00000ul);
+	ad(GS_XYZ2, 0x2000ul, XY(32, 32));
+	ad(GS_XYZ2, 0x2000ul, XY(224, 128));
+	ad(GS_TEST_1, 0, (1ul << 16) | (3ul << 17));   /* ZTST GREATER: fails over the last */
+	ad(GS_RGBAQ, 0x3f800000ul, 0x0000f000ul);
+	ad(GS_XYZ2, 0x2000ul, XY(128, 64));
+	ad(GS_XYZ2, 0x2000ul, XY(416, 160));
+	ad(GS_ZBUF_1, 1, 150ul);                       /* ZMSK */
+	ad(GS_TEST_1, 0, (1ul << 16) | (2ul << 17));   /* ZTST GEQUAL, not written */
+	ad(GS_RGBAQ, 0x3f800000ul, 0x000000f0ul);
+	ad(GS_XYZ2, 0x1800ul, XY(96, 192));
+	ad(GS_XYZ2, 0x1800ul, XY(544, 256));
+	/* DATE, DATM 0: drawn where the frame's alpha bit is clear */
+	ad(GS_TEST_1, 0, (1ul << 14) | (1ul << 16) | (1ul << 17));
+	ad(GS_RGBAQ, 0x3f800000ul, 0x00f0f000ul);
+	ad(GS_XYZ2, 0, XY(0, 288));
+	ad(GS_XYZ2, 0, XY(640, 336));
+	/* DATE, DATM 1: drawn where it is set */
+	ad(GS_TEST_1, 0, (1ul << 14) | (1ul << 15) | (1ul << 16) | (1ul << 17));
+	ad(GS_RGBAQ, 0x3f800000ul, 0x0000f0f0ul);
+	ad(GS_XYZ2, 0, XY(0, 352));
+	ad(GS_XYZ2, 0, XY(640, 400));
+}
+
 /* A 32-bit sprite at block 0, then a 16-bit sprite textured from the
  * same block (a texture shuffle) that starts 32 pixels left of the
  * drawing offset: the quad the shuffle is redrawn as starts there too
@@ -1041,6 +1085,7 @@ static const struct { const char* name; void (*build)(void); const char* scale; 
 	{ "shuffle_left_of_offset", case_shuffle_left_of_offset, "1" },
 	{ "split_clear_no_display", case_split_clear_no_display, "1" },
 	{ "frame_on_depth32", case_frame_on_depth32, "1" },
+	{ "depth_states",    case_depth_states,  "1" },
 	{ "display_large_2x", case_display_large, "2" },
 	{ "frame_low",       case_frame_low,     "1" },
 	{ "frame_low_odd",   case_frame_low_odd, "1" },

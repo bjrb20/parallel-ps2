@@ -503,6 +503,8 @@ static void SafeDestroyDescriptorSetLayout(VkDevice dev, VkDescriptorSetLayout& 
 			SupportsExtension(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME, false);
 		m_optional_extensions.vk_khr_shader_draw_parameters =
 			SupportsExtension(VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME, false);
+		m_optional_extensions.vk_ext_extended_dynamic_state =
+			SupportsExtension(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME, false);
 
 		return true;
 	}
@@ -605,6 +607,27 @@ static void SafeDestroyDescriptorSetLayout(VkDevice dev, VkDescriptorSetLayout& 
 			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_FEATURES_EXT};
 		VkPhysicalDeviceLineRasterizationFeaturesEXT line_rasterization_feature = {
 			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT};
+		VkPhysicalDeviceExtendedDynamicStateFeaturesEXT eds_feature;
+		/* Vulkan 1.3 has the commands without the extension or a feature
+		 * to enable; they are taken once the device is made, if the
+		 * instance's version lets them be resolved. */
+		const bool eds_core = !m_optional_extensions.vk_ext_extended_dynamic_state
+			&& m_device_properties.apiVersion >= VK_API_VERSION_1_3;
+
+		eds_feature.sType                = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT;
+		eds_feature.pNext                = nullptr;
+		eds_feature.extendedDynamicState = VK_FALSE;
+		if (m_optional_extensions.vk_ext_extended_dynamic_state)
+		{
+			VkPhysicalDeviceFeatures2 features2;
+			features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+			features2.pNext = &eds_feature;
+			vkGetPhysicalDeviceFeatures2(vk_init_info.gpu, &features2);
+			eds_feature.pNext = nullptr;
+			m_optional_extensions.vk_ext_extended_dynamic_state = (eds_feature.extendedDynamicState == VK_TRUE);
+			if (m_optional_extensions.vk_ext_extended_dynamic_state)
+				Vulkan::AddPointerToChain(&device_info, &eds_feature);
+		}
 
 		if (m_optional_extensions.vk_ext_provoking_vertex)
 		{
@@ -629,6 +652,26 @@ static void SafeDestroyDescriptorSetLayout(VkDevice dev, VkDescriptorSetLayout& 
 		// With the device created, we can fill the remaining entry points.
 		if (!Vulkan::LoadVulkanDeviceFunctions(vk_init_info.device))
 			return false;
+
+		if (eds_core)
+		{
+			vkCmdSetDepthTestEnableEXT   = (PFN_vkCmdSetDepthTestEnableEXT)vkGetDeviceProcAddr(vk_init_info.device, "vkCmdSetDepthTestEnable");
+			vkCmdSetDepthWriteEnableEXT  = (PFN_vkCmdSetDepthWriteEnableEXT)vkGetDeviceProcAddr(vk_init_info.device, "vkCmdSetDepthWriteEnable");
+			vkCmdSetDepthCompareOpEXT    = (PFN_vkCmdSetDepthCompareOpEXT)vkGetDeviceProcAddr(vk_init_info.device, "vkCmdSetDepthCompareOp");
+			vkCmdSetStencilTestEnableEXT = (PFN_vkCmdSetStencilTestEnableEXT)vkGetDeviceProcAddr(vk_init_info.device, "vkCmdSetStencilTestEnable");
+			vkCmdSetStencilOpEXT         = (PFN_vkCmdSetStencilOpEXT)vkGetDeviceProcAddr(vk_init_info.device, "vkCmdSetStencilOp");
+		}
+		/* Dynamic only when the device was made with it and every command
+		 * resolved: a frontend's wrapper that dropped the extension, or an
+		 * instance older than 1.3, leaves the state in the pipelines. */
+		m_optional_extensions.vk_ext_extended_dynamic_state =
+			(m_optional_extensions.vk_ext_extended_dynamic_state || eds_core)
+			&& vkCmdSetDepthTestEnableEXT && vkCmdSetDepthWriteEnableEXT && vkCmdSetDepthCompareOpEXT
+			&& vkCmdSetStencilTestEnableEXT && vkCmdSetStencilOpEXT;
+		m_dss_dynamic = m_optional_extensions.vk_ext_extended_dynamic_state ? 0xFF : 0;
+		m_dss_key     = 0;
+		m_dss_applied = 0;
+		m_dss_target  = m_optional_extensions.vk_ext_extended_dynamic_state ? &m_dss_key : &m_pipeline_selector.dss.key;
 
 		// Grab the graphics and present queues.
 		vkGetDeviceQueue(vk_init_info.device, m_graphics_queue_family_index, 0, &m_graphics_queue);
@@ -701,6 +744,8 @@ static void SafeDestroyDescriptorSetLayout(VkDevice dev, VkDescriptorSetLayout& 
 			m_optional_extensions.vk_ext_line_rasterization ? "supported" : "NOT supported");
 		log_cb(RETRO_LOG_INFO, "VK_EXT_rasterization_order_attachment_access is %s\n",
 			m_optional_extensions.vk_ext_rasterization_order_attachment_access ? "supported" : "NOT supported");
+		log_cb(RETRO_LOG_INFO, "Extended dynamic state (depth/stencil) is %s\n",
+			m_optional_extensions.vk_ext_extended_dynamic_state ? "in use" : "NOT in use");
 
 		return true;
 	}
@@ -3755,6 +3800,14 @@ VkPipeline GSDeviceVK::BuildTFXPipeline(const PipelineSelector& p, VkShaderModul
 	gpb.SetDynamicViewportAndScissorState();
 	gpb.AddDynamicState(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
 	gpb.AddDynamicState(VK_DYNAMIC_STATE_LINE_WIDTH);
+	if (m_optional_extensions.vk_ext_extended_dynamic_state)
+	{
+		gpb.AddDynamicState(VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE_EXT);
+		gpb.AddDynamicState(VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT);
+		gpb.AddDynamicState(VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT);
+		gpb.AddDynamicState(VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT);
+		gpb.AddDynamicState(VK_DYNAMIC_STATE_STENCIL_OP_EXT);
+	}
 
 	// Shaders
 	gpb.SetVertexShader(vs);
@@ -3777,7 +3830,16 @@ VkPipeline GSDeviceVK::BuildTFXPipeline(const PipelineSelector& p, VkShaderModul
 	static const VkCompareOp ztst[] = {
 		VK_COMPARE_OP_NEVER, VK_COMPARE_OP_ALWAYS, VK_COMPARE_OP_GREATER_OR_EQUAL, VK_COMPARE_OP_GREATER};
 	gpb.SetDepthState((p.dss.ztst != ZTST_ALWAYS || p.dss.zwe), p.dss.zwe, ztst[p.dss.ztst]);
-	if (p.dss.date)
+	if (m_optional_extensions.vk_ext_extended_dynamic_state)
+	{
+		/* The masks and the reference stay in the pipeline; the enables,
+		 * the compare op and the stencil ops come from the command buffer
+		 * (ApplyDepthStencilState). */
+		const VkStencilOpState sos = {VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP,
+			VK_COMPARE_OP_EQUAL, 1u, 1u, 1u};
+		gpb.SetStencilState(false, sos, sos);
+	}
+	else if (p.dss.date)
 	{
 		const VkStencilOpState sos{VK_STENCIL_OP_KEEP, p.dss.date_one ? VK_STENCIL_OP_ZERO : VK_STENCIL_OP_KEEP,
 			VK_STENCIL_OP_KEEP, VK_COMPARE_OP_EQUAL, 1u, 1u, 1u};
@@ -3871,12 +3933,15 @@ __noinline VkPipeline GSDeviceVK::GetTFXPipelineMissed(const PipelineSelector& p
 
 /* The list file: a header, the selectors as the device holds them, and a
  * hash of all that comes before it. A version or a shader cache version of
- * another build, a selector of another size, a count the file does not
- * hold or a hash that does not match: the list is not read, and the one
- * this session makes replaces it. */
+ * another build, a selector of another size, selectors keyed for another
+ * depth/stencil state (dynamic or baked), a count the file does not hold
+ * or a hash that does not match: the list is not read, and the one this
+ * session makes replaces it. */
 #define PLIST_MAGIC   0x4C505653u /* "SVPL" */
-#define PLIST_VERSION 1u
+#define PLIST_VERSION 2u
 #define PLIST_MAX     65536u
+/* flags: the selectors leave out the depth/stencil state (dss is zero) */
+#define PLIST_FLAG_DYNAMIC_DS 1u
 
 typedef struct PipelineListHeader
 {
@@ -3885,6 +3950,7 @@ typedef struct PipelineListHeader
 	u32 shader_version;
 	u32 entry_size;
 	u32 count;
+	u32 flags;
 } PipelineListHeader;
 
 static void PipelineListPath(char* path, size_t size)
@@ -3894,10 +3960,10 @@ static void PipelineListPath(char* path, size_t size)
 }
 
 /* A selector a list may hold: its fields index tables of the size they
- * have here. */
-static bool PipelineSelectorValid(const GSDeviceVK::PipelineSelector& p)
+ * have here, and with the depth/stencil state dynamic it has none. */
+static bool PipelineSelectorValid(const GSDeviceVK::PipelineSelector& p, bool dynamic_ds)
 {
-	return p.topology < 3 && (!p.bs.enable || p.bs.op < 3);
+	return p.topology < 3 && (!p.bs.enable || p.bs.op < 3) && (!dynamic_ds || p.dss.key == 0);
 }
 
 void GSDeviceVK::PipelineListAdd(const PipelineSelector& p)
@@ -3932,6 +3998,7 @@ void GSDeviceVK::PipelineListLoad()
 	PipelineListHeader h;
 	u64 hash;
 	u32 i;
+	const bool dynamic_ds = m_optional_extensions.vk_ext_extended_dynamic_state;
 
 	m_plist_count = 0;
 	m_plist_dirty = false;
@@ -3945,6 +4012,7 @@ void GSDeviceVK::PipelineListLoad()
 	memcpy(&h, data, sizeof(h));
 	if (h.magic != PLIST_MAGIC || h.version != PLIST_VERSION || h.shader_version != SHADER_CACHE_VERSION
 		|| h.entry_size != sizeof(PipelineSelector) || h.count > PLIST_MAX
+		|| h.flags != (dynamic_ds ? PLIST_FLAG_DYNAMIC_DS : 0u)
 		|| (int64_t)(sizeof(h) + (u64)h.count * sizeof(PipelineSelector) + sizeof(hash)) != len)
 		goto refuse;
 	memcpy(&hash, (const u8*)data + len - sizeof(hash), sizeof(hash));
@@ -3962,7 +4030,7 @@ void GSDeviceVK::PipelineListLoad()
 	{
 		PipelineSelector p;
 		memcpy(&p, (const u8*)data + sizeof(h) + i * sizeof(p), sizeof(p));
-		if (!PipelineSelectorValid(p))
+		if (!PipelineSelectorValid(p, dynamic_ds))
 			goto refuse;
 		memcpy(&m_plist[i], &p, sizeof(p));
 	}
@@ -3993,6 +4061,7 @@ void GSDeviceVK::PipelineListSave()
 	h.shader_version = SHADER_CACHE_VERSION;
 	h.entry_size     = sizeof(PipelineSelector);
 	h.count          = m_plist_count;
+	h.flags          = m_optional_extensions.vk_ext_extended_dynamic_state ? PLIST_FLAG_DYNAMIC_DS : 0u;
 	size = sizeof(h) + (size_t)m_plist_count * sizeof(PipelineSelector) + sizeof(hash);
 	if (!(buf = (u8*)malloc(size)))
 		return;
@@ -4506,6 +4575,32 @@ void GSDeviceVK::SetLineWidth(float width)
 	m_dirty_flags |= DIRTY_FLAG_LINE_WIDTH;
 }
 
+/* Sets what differs between the selector the command buffer holds and
+ * the one the draw wants: the same state a pipeline of that selector
+ * bakes in BuildTFXPipeline without dynamic state. */
+__noinline void GSDeviceVK::ApplyDepthStencilState(VkCommandBuffer cmdbuf)
+{
+	static const VkCompareOp ztst[] = {
+		VK_COMPARE_OP_NEVER, VK_COMPARE_OP_ALWAYS, VK_COMPARE_OP_GREATER_OR_EQUAL, VK_COMPARE_OP_GREATER};
+	const GSHWDrawConfig::DepthStencilSelector want(m_dss_key);
+	const GSHWDrawConfig::DepthStencilSelector have(m_dss_applied);
+	const bool all = (m_dss_applied == m_dss_dynamic);
+	const bool test = (want.ztst != ZTST_ALWAYS || want.zwe);
+
+	if (all || test != (have.ztst != ZTST_ALWAYS || have.zwe))
+		vkCmdSetDepthTestEnableEXT(cmdbuf, test);
+	if (all || want.zwe != have.zwe)
+		vkCmdSetDepthWriteEnableEXT(cmdbuf, want.zwe);
+	if (all || want.ztst != have.ztst)
+		vkCmdSetDepthCompareOpEXT(cmdbuf, ztst[want.ztst]);
+	if (all || want.date != have.date)
+		vkCmdSetStencilTestEnableEXT(cmdbuf, want.date);
+	if (all || want.date_one != have.date_one)
+		vkCmdSetStencilOpEXT(cmdbuf, VK_STENCIL_FACE_FRONT_AND_BACK, VK_STENCIL_OP_KEEP,
+			want.date_one ? VK_STENCIL_OP_ZERO : VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_EQUAL);
+	m_dss_applied = m_dss_key;
+}
+
 void GSDeviceVK::PSSetShaderResource(int i, GSTexture* sr, bool check_state)
 {
 	GSTextureVK* vkTex = static_cast<GSTextureVK*>(sr);
@@ -4725,7 +4820,7 @@ __noinline bool GSDeviceVK::RetryTFXState(bool already_execed, const char* what)
 
 bool GSDeviceVK::ApplyTFXState(bool already_execed)
 {
-	if (m_current_pipeline_layout == PipelineLayout::TFX && m_dirty_flags == 0)
+	if (m_current_pipeline_layout == PipelineLayout::TFX && m_dirty_flags == 0 && m_dss_key == m_dss_applied)
 		return true;
 
 	const VkCommandBuffer cmdbuf = GetCurrentCommandBuffer();
@@ -4821,6 +4916,8 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 	if (layout_changed)
 	{
 		m_current_pipeline_layout = PipelineLayout::TFX;
+		/* a new command buffer, or a utility pipeline's own state */
+		m_dss_applied = m_dss_dynamic;
 
 		dsets[0] = m_tfx_ubo_descriptor_set;
 		dsets[1] = m_tfx_texture_descriptor_set;
@@ -4850,6 +4947,8 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 			dynamic_offsets);
 	}
 
+	if (m_dss_key != m_dss_applied)
+		ApplyDepthStencilState(cmdbuf);
 
 	ApplyBaseState(flags, cmdbuf);
 	return true;
@@ -5001,7 +5100,11 @@ GSTextureVK* GSDeviceVK::SetupPrimitiveTrackingDATE(GSHWDrawConfig& config)
 	// cut down the configuration for the prepass, we don't need blending or any feedback loop
 	PipelineSelector& pipe = m_pipeline_selector;
 	UpdateHWPipelineSelector(config, pipe);
-	pipe.dss.zwe = false;
+	{
+		GSHWDrawConfig::DepthStencilSelector dss(*m_dss_target);
+		dss.zwe = false;
+		*m_dss_target = dss.key;
+	}
 	pipe.cms.wrgba = 0;
 	pipe.bs = {};
 	pipe.feedback_loop_flags = FeedbackLoopFlag_None;
@@ -5359,7 +5462,7 @@ void GSDeviceVK::RenderHW(GSHWDrawConfig& config)
 
 		pipe.ps = config.alpha_second_pass.ps;
 		pipe.cms = config.alpha_second_pass.colormask;
-		pipe.dss = config.alpha_second_pass.depth;
+		*m_dss_target = config.alpha_second_pass.depth.key;
 		pipe.bs = config.blend;
 		if (BindDrawPipeline(pipe))
 			SendHWDraw(config, draw_rt, false);
@@ -5426,7 +5529,7 @@ void GSDeviceVK::UpdateHWPipelineSelector(GSHWDrawConfig& config, PipelineSelect
 	pipe.vs.key = config.vs.key;
 	pipe.ps.key_hi = config.ps.key_hi;
 	pipe.ps.key_lo = config.ps.key_lo;
-	pipe.dss.key = config.depth.key;
+	*m_dss_target = config.depth.key;
 	pipe.bs.key = config.blend.key;
 	pipe.bs.constant = 0; // don't dupe states with different alpha values
 	pipe.cms.key = config.colormask.key;

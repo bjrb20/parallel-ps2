@@ -74,6 +74,11 @@ public:
 		bool vk_khr_driver_properties : 1;
 		bool vk_khr_fragment_shader_barycentric : 1;
 		bool vk_khr_shader_draw_parameters : 1;
+		/* Depth test, depth write, depth compare, stencil test and
+		 * stencil op are set on the command buffer, not baked into the
+		 * TFX pipelines: VK_EXT_extended_dynamic_state, or the same
+		 * commands of Vulkan 1.3. */
+		bool vk_ext_extended_dynamic_state : 1;
 	};
 
 	struct alignas(8) PipelineSelector
@@ -715,6 +720,7 @@ private:
 
 	void SetInitialState(VkCommandBuffer cmdbuf);
 	void ApplyBaseState(u32 flags, VkCommandBuffer cmdbuf);
+	void ApplyDepthStencilState(VkCommandBuffer cmdbuf);
 
 	// Which bindings/state has to be updated before the next draw.
 	u32 m_dirty_flags = 0;
@@ -733,6 +739,14 @@ private:
 	float m_current_line_width = 1.0f;
 	GSVector4i m_scissor = GSVector4i::zero();
 	u8 m_blend_constant_color = 0;
+	/* 0xFF with the depth/stencil state dynamic, else 0. With it, the
+	 * selector the next TFX draw wants and the one the command buffer
+	 * holds, the latter 0xFF (no selector: it uses five bits) where a new
+	 * command buffer or a utility pipeline left the state undefined;
+	 * without it both stay 0. */
+	u8 m_dss_dynamic = 0;
+	u8 m_dss_key = 0;
+	u8 m_dss_applied = 0;
 
 	std::array<const GSTextureVK*, NUM_TFX_TEXTURES> m_tfx_textures{};
 	VkSampler m_tfx_sampler = VK_NULL_HANDLE;
@@ -753,6 +767,11 @@ private:
 
 	// current pipeline selector - we save this in the struct to avoid re-zeroing it every draw
 	PipelineSelector m_pipeline_selector = {};
+	/* Where a draw's depth/stencil selector goes: m_dss_key with the
+	 * state dynamic, which leaves the selector's zero so one pipeline
+	 * serves every depth test, depth write and DATE stencil mode of the
+	 * rest of its key; else the selector's. */
+	u8* m_dss_target = &m_pipeline_selector.dss.key;
 };
 
 extern struct vk_init_info_t vk_init_info;

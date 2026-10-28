@@ -59,7 +59,7 @@ if [ ! -f "$CORE" ]; then
 	exit 0
 fi
 
-CASES="dest_alpha mip_tw8 points aa1_line"
+CASES="dest_alpha mip_tw8 points aa1_line depth_states"
 for c in $CASES; do
 	"$WORK/swdraw$EXE" --bios "$WORK/$c.bin" $c >/dev/null
 done

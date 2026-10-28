@@ -198,3 +198,8 @@ extern "C" {
 #define vkBindBufferMemory2 pcsx2_vkBindBufferMemory2
 #define vkBindImageMemory2 pcsx2_vkBindImageMemory2
 #define vkCmdPushDescriptorSetKHR pcsx2_vkCmdPushDescriptorSetKHR
+#define vkCmdSetDepthTestEnableEXT pcsx2_vkCmdSetDepthTestEnableEXT
+#define vkCmdSetDepthWriteEnableEXT pcsx2_vkCmdSetDepthWriteEnableEXT
+#define vkCmdSetDepthCompareOpEXT pcsx2_vkCmdSetDepthCompareOpEXT
+#define vkCmdSetStencilTestEnableEXT pcsx2_vkCmdSetStencilTestEnableEXT
+#define vkCmdSetStencilOpEXT pcsx2_vkCmdSetStencilOpEXT
