@@ -206,13 +206,29 @@ struct pad_input
 static struct pad_input pad_staged[NUM_CONTROLLER_PORTS];
 static struct pad_input pad_live[NUM_CONTROLLER_PORTS];
 
+/* The pcsx2_multitap option as it was when the content loaded: bit 0 a
+ * multitap in console port 1, bit 1 one in console port 2. It changes
+ * only on the next load, as the option says. */
+static unsigned pad_multitap;
+
+static void pad_read_multitap_option(void)
+{
+	struct retro_variable var = { "pcsx2_multitap", NULL };
+	const char* tap = environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value ? var.value : "disabled";
+	pad_multitap = 0;
+	if (!strcmp(tap, "port 1") || !strcmp(tap, "ports 1 and 2"))
+		pad_multitap |= 1;
+	if (!strcmp(tap, "port 2") || !strcmp(tap, "ports 1 and 2"))
+		pad_multitap |= 2;
+}
+
 /* The SIO pad that a frontend port drives: the slots of console port 1
  * first, then those of console port 2. A console port without a multitap
  * has one slot. NUM_CONTROLLER_PORTS when the frontend port has no pad. */
 static u32 pad_for_port(unsigned port)
 {
-	const unsigned slots0 = EmuConfig.MultitapPort0_Enabled ? 4 : 1;
-	const unsigned slots1 = EmuConfig.MultitapPort1_Enabled ? 4 : 1;
+	const unsigned slots0 = (pad_multitap & 1) ? 4 : 1;
+	const unsigned slots1 = (pad_multitap & 2) ? 4 : 1;
 	if (port < slots0)
 		return sioConvertPortAndSlotToPad(0, port);
 	if (port < slots0 + slots1)
@@ -240,10 +256,11 @@ static int16_t pad_latched_input(unsigned port, unsigned device, unsigned index,
 {
 	struct pad_input* in;
 	int v;
+	const u32 pad = pad_for_port(port);
 	(void)index;
-	if (pad_for_port(port) >= NUM_CONTROLLER_PORTS)
+	if (pad >= NUM_CONTROLLER_PORTS)
 		return 0;
-	in = &pad_live[pad_for_port(port)];
+	in = &pad_live[pad];
 	if (device == RETRO_DEVICE_KEYBOARD)
 		return id < RETROK_LAST && ((in->keys[id >> 3] >> (id & 7)) & 1);
 	if (device != RETRO_DEVICE_MOUSE)
@@ -431,10 +448,10 @@ namespace Input
 		{ port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X, "Right Analog X" }, \
 		{ port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y, "Right Analog Y" }
 
-		/* Only ports 0 and 1 are actually polled in Update() and only
-		 * pads[0..1][0..3] are wired through PAD/SIO. Ports 2-7 are
-		 * the multitap slots (pcsx2_multitap); they are read only when
-		 * a multitap gives them a pad. */
+		/* Frontend ports 0 and 1 are the console ports; each multitap
+		 * the option plugs in adds three more (pcsx2_multitap). Only the
+		 * ports that have a pad are offered, so the frontend shows no
+		 * port that is never read. */
 		struct retro_input_descriptor desc[] = {
 			JOY_DESC(0), JOY_DESC(1), JOY_DESC(2), JOY_DESC(3),
 			JOY_DESC(4), JOY_DESC(5), JOY_DESC(6), JOY_DESC(7),
@@ -455,13 +472,23 @@ namespace Input
 			{},
 		};
 
-		static const struct retro_controller_info ports[] = {
+		static const struct retro_controller_info all_ports[] = {
 			{ port_devices, sizeof(port_devices) / sizeof(*port_devices) },
 			{ port_devices, sizeof(port_devices) / sizeof(*port_devices) },
 			{ tap_devices, 1 }, { tap_devices, 1 }, { tap_devices, 1 },
 			{ tap_devices, 1 }, { tap_devices, 1 }, { tap_devices, 1 },
 			{},
 		};
+		/* Static, as the table was: the frontend may keep the pointer. */
+		static struct retro_controller_info ports[NUM_CONTROLLER_PORTS + 1];
+		unsigned nports;
+		const unsigned per_port = 20; /* entries JOY_DESC adds */
+
+		pad_read_multitap_option();
+		nports = 2 + ((pad_multitap & 1) ? 3 : 0) + ((pad_multitap & 2) ? 3 : 0);
+		memcpy(ports, all_ports, nports * sizeof(ports[0]));
+		memset(&ports[nports], 0, sizeof(ports[0]));
+		memset(&desc[nports * per_port], 0, sizeof(desc[0]));
 
 		environ_cb(RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE, &rumble);
 		environ_cb(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, (void*)ports);
@@ -491,7 +518,10 @@ namespace Input
 			u32 mask            = input_cb(port, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_MASK);
 			u32 new_button_mask = 0xFFFF0000;
 			u32 btn_index       = 0;
-			const auto &conf    = pad_settings[port < 2 ? port : 1];
+			const std::tuple<u32, u32> con = sioConvertPadToPortAndSlot(pad);
+			const u32 con_port  = std::get<0>(con);
+			const u32 con_slot  = std::get<1>(con);
+			const auto &conf    = pad_settings[con_port];
 
 			for (int i = 0; i < 16; ++i)
 			{
@@ -550,11 +580,7 @@ namespace Input
 			pad_staged[pad].ry      = new_ry;
 
 			if (conf.rumble_scale_q8 > 0)
-			{
-				const u32 sio = (pad == 1 || pad >= 5) ? 1 : 0;
-				const u32 slot = pad < 2 ? 0 : pad < 5 ? pad - 1 : pad - 4;
-				pads[sio][slot].rumble(conf.rumble_scale_q8, port);
-			}
+				pads[con_port][con_slot].rumble(conf.rumble_scale_q8, port);
 		}
 	}
 
@@ -650,7 +676,7 @@ void stop_rumble()
 	if (!rumble.set_rumble_state)
 		return;
 
-	for (int port = 0; port < 2; ++port)
+	for (int port = 0; port < NUM_CONTROLLER_PORTS; ++port)
 	{
 		rumble.set_rumble_state(port, RETRO_RUMBLE_STRONG, 0);
 		rumble.set_rumble_state(port, RETRO_RUMBLE_WEAK, 0);
@@ -1107,10 +1133,8 @@ bool PADcomplete(void) { return query.queryDone; }
 
 void PAD::LoadConfig()
 {
-	struct retro_variable var = { "pcsx2_multitap", NULL };
-	const char* tap = environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value ? var.value : "disabled";
-	EmuConfig.MultitapPort0_Enabled = !strcmp(tap, "port 1") || !strcmp(tap, "ports 1 and 2");
-	EmuConfig.MultitapPort1_Enabled = !strcmp(tap, "port 2") || !strcmp(tap, "ports 1 and 2");
+	EmuConfig.MultitapPort0_Enabled = (pad_multitap & 1) != 0;
+	EmuConfig.MultitapPort1_Enabled = (pad_multitap & 2) != 0;
 	for (u32 i = 0; i < NUM_CONTROLLER_PORTS; i++)
 		g_key_status.m_type[i] = NotConnected;
 	for (u32 port = 0; port < NUM_CONTROLLER_PORTS; port++)
